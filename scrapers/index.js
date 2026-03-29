@@ -1,0 +1,23 @@
+// Central registry — add new scrapers here
+module.exports = [
+  require('./thornleygroves'),
+  require('./jordanfishwick'),
+  require('./philipjames'),
+  require('./bridgfords'),
+  require('./martinco'),
+  require('./reedsrains'),
+  require('./nicholashumphreys'),
+  require('./gascoignehalman'),
+  require('./montrose'),
+  require('./southmanchesterhomes'),
+  require('./hunters'),
+  require('./purplebricks'),
+  require('./peteranthony'),
+  require('./edwardmellor'),
+  require('./blackstone'),
+  require('./quayproperty'),
+  require('./lawrencecopeland'),
+  require('./beyond'),
+  require('./letme'),
+  require('./belvoir'),
+];
