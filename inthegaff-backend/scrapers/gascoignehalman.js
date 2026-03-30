@@ -3,76 +3,87 @@ const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostco
 const BASE = 'https://www.gascoignehalman.co.uk';
 
 module.exports = {
-  id:      'gascoignehalman',
-  name:    'Gascoigne Halman',
+  id: 'gascoignehalman',
+  name: 'Gascoigne Halman',
   website: BASE,
-  areas:   ['Didsbury', 'Chorlton', 'Sale', 'Altrincham', 'Wilmslow'],
+  areas: ['Didsbury', 'Chorlton', 'Sale', 'Altrincham', 'Wilmslow'],
 
   async scrape() {
     const listings = [];
-    // Try multiple URL patterns — GH has changed their site a few times
-    const candidates = [
-      `${BASE}/search/to-rent/`,
-      `${BASE}/properties/lettings/`,
-      `${BASE}/search/?sale_type=to_rent`,
+
+    const urls = [
+      `${BASE}/search/?instruction_type=Let`,
       `${BASE}/search/?instruction_type=Letting`,
+      `${BASE}/properties/to-rent/`,
+      `${BASE}/search/to-rent/`,
     ];
 
-    let workingBase = null;
-    for (const url of candidates) {
+    let $ = null;
+    let workingUrl = null;
+    for (const url of urls) {
       try {
-        const $ = await fetchHTML(url);
-        const cards = $('[class*="property"], [class*="listing"], .result, article').filter((i, el) =>
-          $(el).find('[class*="price"]').length > 0
-        ).toArray();
-        if (cards.length) { workingBase = url; break; }
-      } catch (e) {
-        continue;
-      }
+        $ = await fetchHTML(url);
+        if ($.text().includes('\u00a3') || $('[class*="property"]').length > 2) {
+          workingUrl = url;
+          break;
+        }
+      } catch (e) { continue; }
     }
-
-    if (!workingBase) return listings;
+    if (!workingUrl || !$) return listings;
 
     let page = 1;
     while (true) {
-      const url = `${workingBase}${workingBase.includes('?') ? '&' : '?'}page=${page}`;
-      let $;
-      try {
-        $ = await fetchHTML(url);
-      } catch (e) { break; }
+      if (page > 1) {
+        const sep = workingUrl.includes('?') ? '&' : '?';
+        try { $ = await fetchHTML(`${workingUrl}${sep}page=${page}`); } catch (e) { break; }
+      }
 
-      const cards = $(
-        '[class*="property-card"], [class*="PropertyCard"], [class*="property-item"], ' +
-        '[class*="listing-card"], .property, .property-card, .result-item, article.property'
-      ).toArray();
+      let cards = $('[class*="property-card"], [class*="property_card"], .property-card, article.property, [class*="result"]').filter((i, el) => {
+        return $(el).text().includes('\u00a3') || $(el).find('[class*="price"]').length > 0;
+      }).toArray();
       if (!cards.length) break;
 
       for (const card of cards) {
-        const el      = $(card);
-        const href    = el.find('a[href*="propert"], a[href*="let"], a[href*="rent"]').first().attr('href') || '';
+        const el = $(card);
+        const href = el.find('a[href*="propert"], a[href*="let"], a').first().attr('href') || '';
+        if (!href || href === '#') continue;
         const fullUrl = href.startsWith('http') ? href : BASE + href;
-        const price   = parsePrice(el.find('[class*="price"], [class*="Price"]').first().text());
+        const extId = href.replace(/\/$/, '').split('/').pop() || href;
+
+        const priceStr = el.find('[class*="price"]').first().text().trim()
+          || el.text().match(/\u00a3[\d,]+/)?.[0] || '';
+        const address = el.find('[class*="address"], h2, h3, h4').first().text().trim();
+        const bedsStr = el.find('[class*="bed"]').first().text().trim();
+        const imgSrc = extractImage(el.find('img').first());
+
+        const price = parsePrice(priceStr);
         if (!price) continue;
-        const address  = el.find('[class*="address"], [class*="Address"], h2, h3').first().text().trim();
+
+        // Only include PCM prices (lettings), not sale prices
+        if (price > 10000) continue;
+
         const postcode = extractPostcode(address);
-        const desc     = el.find('p').first().text().trim();
+        const area = guessArea(address, postcode);
+
         listings.push({
-          externalId: href.replace(/\/$/, '').split('/').pop() || href,
-          title: address, price,
-          beds: parseBeds(el.find('[class*="bed"]').first().text() || address),
-          type: parseType(address), area: guessArea(address, postcode),
-          street: address, postcode, description: desc,
-          photos: [extractImage(el.find('img').first())].filter(Boolean),
+          externalId: extId,
+          title: address,
+          price,
+          beds: parseBeds(bedsStr || address),
+          type: parseType(address),
+          area,
+          street: address,
+          postcode,
+          description: '',
+          photos: imgSrc ? [imgSrc] : [],
           features: [],
-          furnished: hasFeature(desc, ['furnished']),
-          parking:   hasFeature(desc, ['parking']),
-          pets:      hasFeature(desc, ['pets']),
-          garden:    hasFeature(desc, ['garden']),
-          balcony:   hasFeature(desc, ['balcony']),
+          furnished: false, parking: false, pets: false, garden: false, balcony: false,
           listingUrl: fullUrl,
         });
       }
-      if (!$('a[rel="next"], .next, [aria-label="Next"]').length || page >= 15) break;
+
+      const hasNext = $('a[rel="next"], .next, [aria-label="Next"]').length > 0;
+      if (!hasNext || page >= 8) break;
       page++;
       await new Promise(r => setTimeout(r, 1500));
     }
