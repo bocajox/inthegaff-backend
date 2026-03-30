@@ -1,9 +1,8 @@
 const express = require('express');
-const router  = express.Router();
+const router = express.Router();
 const { pool } = require('../db');
 
 // GET /api/listings
-// Query params: area, beds, type, minPrice, maxPrice, furnished, parking, pets, garden, sort, limit, offset
 router.get('/', async (req, res) => {
   try {
     const {
@@ -12,9 +11,14 @@ router.get('/', async (req, res) => {
       sort = 'newest', limit = 50, offset = 0
     } = req.query;
 
-    const conditions = ['l.is_active = true'];
-    const values     = [];
-    let   idx        = 1;
+    // Only show active listings with a valid source URL
+    const conditions = [
+      'l.is_active = true',
+      "l.listing_url IS NOT NULL",
+      "l.listing_url != ''"
+    ];
+    const values = [];
+    let idx = 1;
 
     if (area) {
       conditions.push(`(LOWER(l.area) LIKE $${idx} OR LOWER(l.postcode) LIKE $${idx} OR LOWER(l.street) LIKE $${idx})`);
@@ -36,15 +40,15 @@ router.get('/', async (req, res) => {
     if (minPrice) { conditions.push(`l.price >= $${idx}`); values.push(parseInt(minPrice)); idx++; }
     if (maxPrice) { conditions.push(`l.price <= $${idx}`); values.push(parseInt(maxPrice)); idx++; }
     if (furnished === 'true') { conditions.push(`l.furnished = true`); }
-    if (parking   === 'true') { conditions.push(`l.parking   = true`); }
-    if (pets      === 'true') { conditions.push(`l.pets      = true`); }
-    if (garden    === 'true') { conditions.push(`l.garden    = true`); }
-    if (balcony   === 'true') { conditions.push(`l.balcony   = true`); }
+    if (parking === 'true')   { conditions.push(`l.parking = true`); }
+    if (pets === 'true')      { conditions.push(`l.pets = true`); }
+    if (garden === 'true')    { conditions.push(`l.garden = true`); }
+    if (balcony === 'true')   { conditions.push(`l.balcony = true`); }
 
     const orderMap = {
       newest: 'l.first_seen DESC',
-      low:    'l.price ASC',
-      high:   'l.price DESC',
+      low: 'l.price ASC',
+      high: 'l.price DESC',
     };
     const orderBy = orderMap[sort] || orderMap.newest;
 
@@ -53,21 +57,20 @@ router.get('/', async (req, res) => {
 
     const { rows } = await pool.query(`
       SELECT l.*, a.name AS agent_name, a.website AS agent_website
-      FROM   listings l
-      JOIN   agents   a ON a.id = l.agent_id
-      WHERE  ${where}
-      ORDER  BY ${orderBy}
-      LIMIT  $${idx} OFFSET $${idx + 1}
+      FROM listings l
+      JOIN agents a ON a.id = l.agent_id
+      WHERE ${where}
+      ORDER BY ${orderBy}
+      LIMIT $${idx} OFFSET $${idx + 1}
     `, values);
 
-    // Count total for pagination
     const countValues = values.slice(0, -2);
     const { rows: countRows } = await pool.query(
       `SELECT COUNT(*) FROM listings l WHERE ${where}`, countValues
     );
 
     res.json({
-      total:    parseInt(countRows[0].count),
+      total: parseInt(countRows[0].count),
       listings: rows.map(formatListing),
     });
   } catch (err) {
@@ -81,9 +84,9 @@ router.get('/:id', async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT l.*, a.name AS agent_name, a.website AS agent_website
-      FROM   listings l
-      JOIN   agents   a ON a.id = l.agent_id
-      WHERE  l.id = $1
+      FROM listings l
+      JOIN agents a ON a.id = l.agent_id
+      WHERE l.id = $1
     `, [req.params.id]);
 
     if (!rows.length) return res.status(404).json({ error: 'Listing not found' });
@@ -95,28 +98,28 @@ router.get('/:id', async (req, res) => {
 
 function formatListing(row) {
   return {
-    id:            row.id,
-    price:         row.price,
-    beds:          row.beds,
-    type:          row.type,
-    area:          row.area,
-    street:        row.street,
-    postcode:      row.postcode,
-    description:   row.description,
-    photos:        row.photos || [],
-    features:      row.features || [],
-    furnished:     row.furnished,
-    parking:       row.parking,
-    pets:          row.pets,
-    garden:        row.garden,
-    balcony:       row.balcony,
-    listingUrl:    row.listing_url,
-    agent:         row.agent_name,
-    agentWebsite:  row.agent_website,
-    isNew:         row.is_new,
-    isPriceDrop:   row.price_changed,
+    id: row.id,
+    price: row.price,
+    beds: row.beds,
+    type: row.type,
+    area: row.area,
+    street: row.street,
+    postcode: row.postcode,
+    description: row.description,
+    photos: row.photos || [],
+    features: row.features || [],
+    furnished: row.furnished,
+    parking: row.parking,
+    pets: row.pets,
+    garden: row.garden,
+    balcony: row.balcony,
+    listingUrl: row.listing_url,
+    agent: row.agent_name,
+    agentWebsite: row.agent_website,
+    isNew: row.is_new,
+    isPriceDrop: row.price_changed,
     originalPrice: row.original_price,
-    listedAt:      row.first_seen,
+    listedAt: row.first_seen,
   };
 }
 
