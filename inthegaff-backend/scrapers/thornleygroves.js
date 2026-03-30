@@ -13,47 +13,32 @@ module.exports = {
     let page = 1;
 
     while (true) {
-      const url = `${BASE}/property/to-rent/in-south-manchester/?page=${page}`;
+      const url = page === 1
+        ? `${BASE}/property/to-rent/in-south-manchester/`
+        : `${BASE}/property/to-rent/in-south-manchester/?page=${page}`;
+
       let $;
       try { $ = await fetchHTML(url); } catch (e) { break; }
 
-      // Thornley Groves (Gatsby SSR) — cards are div.sales-wrap inside div.sales-wrapper
-      // Each card: div.sales-wrap > div.sales-img-wrap (image) + div.slide-content (info)
       const cards = $('div.sales-wrap').toArray();
-
-      // Fallback: try broader selectors in case they change class names
-      if (!cards.length) {
-        const fallback = $('[class*="property-card"], [class*="sales-wrap"], article.property')
-          .filter((i, el) => $(el).find('a[href*="/property"]').length > 0).toArray();
-        if (!fallback.length) break;
-        cards.push(...fallback);
-      }
-
       if (!cards.length) break;
 
       for (const card of cards) {
         const el = $(card);
-
-        // Link: a tag inside sales-img-wrap pointing to /property-to-rent/...
-        const link = el.find('a[href*="/property-to-rent/"], a[href*="/property/"]').first();
+        const link = el.find('a[href*="/property-to-rent/"]').first();
         const href = link.attr('href') || '';
         if (!href) continue;
         const fullUrl = href.startsWith('http') ? href : BASE + href;
-        const extId = href.replace(/\/$/, '').split('/').pop() || href;
+        const extId = el.attr('id') || href.replace(/\/$/, '').split('/').pop();
 
-        // Price: p.highlight-text or div.content containing £
-        const priceStr = el.find('p.highlight-text, div.content').first().text().trim();
-
-        // Address: h3 inside slide-content
+        const priceStr = el.find('p.highlight-text').first().text().trim();
         const titleStr = el.find('h3').first().text().trim();
+        const typeStr  = el.find('span.count.prop_type, span.prop_type').first().text().trim();
 
-        // Type: span.count.prop_type
-        const typeStr = el.find('span.count.prop_type, span.prop_type').first().text().trim();
+        // Beds: span.count elements — first is type, second is beds
+        const countEls = el.find('span.count').not('.prop_type').toArray();
+        const bedsStr  = countEls.length ? $(countEls[0]).text().trim() : '';
 
-        // Beds: span.count elements (beds, baths, receptions — beds is first numeric one)
-        const bedsStr = el.find('span.count').not('.prop_type').first().text().trim();
-
-        // Image: img inside sales-img-wrap — uses srcset and src
         const imgSrc = extractImage(el.find('.sales-img-wrap img, .sales-img img, img').first());
 
         const price = parsePrice(priceStr);
@@ -76,17 +61,16 @@ module.exports = {
           photos: imgSrc ? [imgSrc] : [],
           features: [],
           furnished: hasFeature(desc + titleStr, ['furnished']),
-          parking: hasFeature(desc + titleStr, ['parking', 'garage']),
-          pets: hasFeature(desc + titleStr, ['pets considered', 'pets welcome']),
-          garden: hasFeature(desc + titleStr, ['garden', 'yard']),
-          balcony: hasFeature(desc + titleStr, ['balcony', 'terrace']),
+          parking:   hasFeature(desc + titleStr, ['parking', 'garage']),
+          pets:      hasFeature(desc + titleStr, ['pets considered', 'pets welcome']),
+          garden:    hasFeature(desc + titleStr, ['garden', 'yard']),
+          balcony:   hasFeature(desc + titleStr, ['balcony', 'terrace']),
           listingUrl: fullUrl,
         });
       }
 
-      // Pagination — check for next page link
       const hasNext = $('a[rel="next"], [class*="pagination"] a:contains("Next"), [aria-label="Next"]').length > 0;
-      if (!hasNext || page >= 20) break;
+      if (!hasNext || page >= 10) break;
       page++;
       await new Promise(r => setTimeout(r, 1500));
     }
