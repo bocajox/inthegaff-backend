@@ -3,76 +3,95 @@ const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostco
 const BASE = 'https://www.montroseproperties.co.uk';
 
 module.exports = {
-  id:      'montrose',
-  name:    'Montrose Properties',
+  id: 'montrose',
+  name: 'Montrose Properties',
   website: BASE,
-  areas:   ['Didsbury', 'Withington', 'Fallowfield', 'Chorlton', 'Rusholme'],
+  areas: ['Didsbury', 'Withington', 'Fallowfield', 'Chorlton', 'Rusholme'],
 
   async scrape() {
     const listings = [];
-    // Try common UK letting page URL patterns
-    const candidates = [
+
+    // Try multiple URL patterns — Montrose is a small agent
+    const urls = [
+      `${BASE}/search/?department=residential-lettings`,
+      `${BASE}/search/`,
       `${BASE}/to-let/`,
       `${BASE}/lettings/`,
-      `${BASE}/properties/to-let/`,
-      `${BASE}/properties/?status=to-let`,
-      `${BASE}/rental-properties/`,
     ];
 
-    let workingBase = null;
-    for (const url of candidates) {
+    let $ = null;
+    let workingUrl = null;
+    for (const url of urls) {
       try {
-        const $ = await fetchHTML(url);
-        const hasCards = $('body').text().length > 500;
-        if (hasCards) { workingBase = url; break; }
-      } catch (e) {
-        continue;
-      }
+        $ = await fetchHTML(url);
+        if ($.text().includes('\u00a3') || $('[class*="property"]').length > 0) {
+          workingUrl = url;
+          break;
+        }
+      } catch (e) { continue; }
     }
-
-    if (!workingBase) return listings;
+    if (!workingUrl || !$) return listings;
 
     let page = 1;
     while (true) {
-      const url = page === 1 ? workingBase : `${workingBase.replace(/\/$/, '')}?page=${page}`;
-      let $;
-      try { $ = await fetchHTML(url); } catch (e) { break; }
+      if (page > 1) {
+        const pageUrl = workingUrl.includes('?')
+          ? `${workingUrl}&paged=${page}`
+          : `${workingUrl}page/${page}/`;
+        try { $ = await fetchHTML(pageUrl); } catch (e) { break; }
+      }
 
-      const cards = $(
-        '[class*="property"], .property-item, .listing-item, ' +
-        '[class*="listing"], .result, article.property, .property-card'
-      ).filter((i, el) => $(el).find('[class*="price"]').length > 0).toArray();
+      let cards = $('[class*="property-card"], [class*="property_card"], .property, ul.properties li, a.card, article').filter((i, el) => {
+        return $(el).text().includes('\u00a3') || $(el).find('[class*="price"]').length > 0;
+      }).toArray();
       if (!cards.length) break;
 
       for (const card of cards) {
-        const el      = $(card);
-        const href    = el.find('a').first().attr('href') || '';
+        const el = $(card);
+        const link = el.is('a') ? el : el.find('a[href*="propert"], a').first();
+        const href = link.attr('href') || '';
+        if (!href || href === '#') continue;
         const fullUrl = href.startsWith('http') ? href : BASE + href;
-        const price   = parsePrice(el.find('[class*="price"]').first().text());
+        const extId = href.replace(/\/$/, '').split('/').pop() || href;
+
+        const priceStr = el.find('[class*="price"]').first().text().trim()
+          || el.text().match(/\u00a3[\d,]+/)?.[0] || '';
+        const address = el.find('[class*="address"], h2, h3, h4, .card-title').first().text().trim();
+        const imgSrc = extractImage(el.find('img').first());
+
+        const price = parsePrice(priceStr);
         if (!price) continue;
-        const address  = el.find('[class*="address"], h2, h3').first().text().trim();
+
         const postcode = extractPostcode(address);
-        const desc     = el.find('p').first().text().trim();
+        const area = guessArea(address, postcode);
+
         listings.push({
-          externalId: href.replace(/\/$/, '').split('/').pop() || href,
-          title: address, price,
-          beds: parseBeds(el.find('[class*="bed"]').first().text() || address),
-          type: parseType(address), area: guessArea(address, postcode),
-          street: address, postcode, description: desc,
-          photos: [extractImage(el.find('img').first())].filter(Boolean),
+          externalId: extId,
+          title: address,
+          price,
+          beds: parseBeds(address),
+          type: parseType(address),
+          area,
+          street: address,
+          postcode,
+          description: '',
+          photos: imgSrc ? [imgSrc] : [],
           features: [],
-          furnished: hasFeature(desc, ['furnished']),
-          parking:   hasFeature(desc, ['parking']),
-          pets:      hasFeature(desc, ['pets']),
-          garden:    hasFeature(desc, ['garden']),
-          balcony:   hasFeature(desc, ['balcony']),
+          furnished: false,
+          parking: false,
+          pets: false,
+          garden: false,
+          balcony: false,
           listingUrl: fullUrl,
         });
       }
-      if (!$('a[rel="next"], .next').length || page >= 10) break;
+
+      const hasNext = $('a[rel="next"], .next, a:contains("Next")').length > 0;
+      if (!hasNext || page >= 5) break;
       page++;
       await new Promise(r => setTimeout(r, 1500));
     }
+
     return listings;
   },
 };
