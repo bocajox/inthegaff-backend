@@ -3,51 +3,65 @@ const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostco
 const BASE = 'https://blackstoneestateagent.co.uk';
 
 module.exports = {
-  id:      'blackstone',
-  name:    'Black Stone Estate Agents',
+  id: 'blackstone',
+  name: 'Black Stone Estate Agents',
   website: BASE,
-  areas:   ['Levenshulme', 'Gorton', 'Longsight', 'Burnage'],
+  areas: ['Levenshulme', 'Gorton', 'Longsight', 'Burnage'],
 
   async scrape() {
     const listings = [];
-    let page = 1;
-    while (true) {
-      let $;
-      try { $ = await fetchHTML(`${BASE}/properties/?type=lettings&page=${page}`); } catch (e) { break; }
+    const url = `${BASE}/houses-letting-agency-in-manchester/`;
 
-      const cards = $('[class*="property"], .property-item').toArray();
-      if (!cards.length) break;
+    let $;
+    try { $ = await fetchHTML(url); } catch (e) { return listings; }
 
-      for (const card of cards) {
-        const el      = $(card);
-        const href    = el.find('a').first().attr('href') || '';
-        const fullUrl = href.startsWith('http') ? href : BASE + href;
-        const price   = parsePrice(el.find('[class*="price"]').first().text());
-        if (!price) continue;
-        const address  = el.find('[class*="address"], h2, h3').first().text().trim();
-        const postcode = extractPostcode(address);
-        const desc     = el.find('p').first().text().trim();
-        listings.push({
-          externalId: href.replace(/\/$/, '').split('/').pop() || href,
-          title: address, price,
-          beds: parseBeds(el.find('[class*="bed"]').first().text() || address),
-          type: parseType(address), area: guessArea(address, postcode),
-          street: address, postcode, description: desc,
-          photos: [extractImage(el.find('img').first())].filter(Boolean),
-          features: [],
-          furnished: hasFeature(desc, ['furnished']),
-          parking:   hasFeature(desc, ['parking']),
-          pets:      hasFeature(desc, ['pets']),
-          garden:    hasFeature(desc, ['garden']),
-          balcony:   hasFeature(desc, ['balcony']),
-          listingUrl: fullUrl,
-        });
-      }
-      // Stop at page 5 max — Black Stone was hanging at 82s with unlimited pages
-      if (!$('a[rel="next"], .next').length || page >= 5) break;
-      page++;
-      await new Promise(r => setTimeout(r, 1500));
+    let cards = $('a[href*="/property/"], a[href*="/properties/"]').toArray();
+    if (!cards.length) {
+      cards = $('[class*="property"], .listing, article').filter((i, el) => {
+        return $(el).text().includes('£');
+      }).toArray();
     }
+
+    const seen = new Set();
+    for (const card of cards) {
+      const el = $(card);
+      const href = el.is('a') ? el.attr('href') : el.find('a').first().attr('href') || '';
+      if (!href || href === '#' || seen.has(href)) continue;
+      seen.add(href);
+
+      const fullUrl = href.startsWith('http') ? href : BASE + href;
+      const extId = href.replace(/\/$/, '').split('/').pop() || href;
+
+      const parent = el.closest('[class*="property"], .card, article, div').length ? el.closest('[class*="property"], .card, article') : el;
+      const priceStr = parent.find('[class*="price"]').first().text().trim()
+        || parent.text().match(/£[\d,]+/)?.[0] || '';
+      const address = parent.find('[class*="address"], h2, h3, h4, h5').first().text().trim()
+        || el.text().trim();
+      const imgSrc = extractImage(parent.find('img').first());
+
+      const price = parsePrice(priceStr);
+      if (!price) continue;
+
+      const postcode = extractPostcode(address);
+      const area = guessArea(address, postcode);
+
+      listings.push({
+        externalId: extId,
+        title: address,
+        price,
+        beds: parseBeds(address),
+        type: parseType(address),
+        area,
+        street: address,
+        postcode,
+        description: '',
+        photos: imgSrc ? [imgSrc] : [],
+        features: [],
+        furnished: false, parking: false, pets: false, garden: false, balcony: false,
+        listingUrl: fullUrl,
+      });
+    }
+
     return listings;
   },
 };
