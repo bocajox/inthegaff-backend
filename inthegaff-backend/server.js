@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const pool = require("./db");
+const { pool } = require("./db");
 const listingsRouter = require("./routes/listings");
 const { runAll } = require("./scheduler");
 
@@ -38,7 +38,7 @@ app.listen(PORT, () => {
     }
     scraperRunning = true;
     try {
-      await runAll(pool);
+            await runAll();
     } catch (e) {
       console.error("[server] scraper error:", e.message);
     } finally {
