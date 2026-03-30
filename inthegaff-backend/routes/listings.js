@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 
+// Manchester postcode filter — only show M1-M60 postcodes + empty (unfiltered) ones
+const MCR_FILTER = `(l.postcode ~ '^M\\d{1,2}\\s' OR l.postcode IS NULL OR l.postcode = '')`;
+
 // GET /api/listings
 router.get('/', async (req, res) => {
   try {
@@ -11,11 +14,12 @@ router.get('/', async (req, res) => {
       sort = 'newest', limit = 50, offset = 0
     } = req.query;
 
-    // Only show active listings with a valid source URL
+    // Only show active Manchester listings with a valid source URL
     const conditions = [
       'l.is_active = true',
       "l.listing_url IS NOT NULL",
-      "l.listing_url != ''"
+      "l.listing_url != ''",
+      MCR_FILTER
     ];
     const values = [];
     let idx = 1;
@@ -93,6 +97,27 @@ router.get('/:id', async (req, res) => {
     res.json(formatListing(rows[0]));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch listing' });
+  }
+});
+
+// POST /api/listings/cleanup — removes non-Manchester listings from the database
+router.post('/cleanup', async (req, res) => {
+  try {
+    // Delete listings where postcode is NOT a Manchester M-postcode
+    // and postcode is not empty (empty means we couldn't determine location)
+    const { rowCount } = await pool.query(`
+      DELETE FROM listings
+      WHERE postcode != '' AND postcode IS NOT NULL
+        AND NOT (postcode ~ '^M\\d{1,2}\\s')
+    `);
+    res.json({
+      success: true,
+      message: `Removed ${rowCount} non-Manchester listings`,
+      removed: rowCount,
+    });
+  } catch (err) {
+    console.error('POST /listings/cleanup error:', err.message);
+    res.status(500).json({ error: 'Cleanup failed: ' + err.message });
   }
 });
 
