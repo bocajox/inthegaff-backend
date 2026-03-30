@@ -2,6 +2,28 @@ const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostco
 
 const BASE = 'https://www.hunters.com';
 
+// Manchester postcodes and area keywords for filtering
+const MANCHESTER_KEYWORDS = [
+  'manchester', 'salford', 'chorlton', 'didsbury', 'fallowfield',
+  'withington', 'levenshulme', 'rusholme', 'hulme', 'ancoats',
+  'northern quarter', 'whalley range', 'stretford', 'sale',
+  'altrincham', 'stockport', 'moss side', 'old trafford',
+  'burnage', 'longsight', 'gorton', 'ardwick', 'openshaw',
+  'droylsden', 'denton', 'hyde', 'stalybridge', 'ashton',
+  'trafford', 'eccles', 'swinton', 'prestwich', 'whitefield',
+  'bury', 'bolton', 'rochdale', 'oldham', 'tameside',
+  'mediacity', 'castlefield', 'deansgate', 'spinningfields',
+  'piccadilly', 'arndale',
+];
+const MANCHESTER_POSTCODES = /\b(M\d{1,2}|SK\d{1,2}|WA\d{1,2}|BL\d|OL\d|WN\d)\b/i;
+
+function isManchesterArea(address) {
+  const lower = address.toLowerCase();
+  if (MANCHESTER_KEYWORDS.some(k => lower.includes(k))) return true;
+  if (MANCHESTER_POSTCODES.test(address)) return true;
+  return false;
+}
+
 module.exports = {
   id: 'hunters',
   name: 'Hunters',
@@ -11,8 +33,7 @@ module.exports = {
   async scrape() {
     const listings = [];
 
-    // Hunters uses Nurtur platform (same as Belvoir)
-    // Property cards use .property--card__results class
+    // Target Manchester-specific branch URL first
     const urls = [
       `${BASE}/estate-agents-and-letting-agents/branch/manchester/property-to-rent/`,
       `${BASE}/search-results/to-let/in-manchester/`,
@@ -24,9 +45,8 @@ module.exports = {
     for (const url of urls) {
       try {
         $ = await fetchHTML(url);
-        // Check for Nurtur property cards or price mentions
         if ($('.property-card, .property--card__results, [class*="property-card"]').length > 0
-            || ($('.property-price--search').length > 0)) {
+          || ($('.property-price--search').length > 0)) {
           workingUrl = url;
           break;
         }
@@ -36,6 +56,7 @@ module.exports = {
         }
       } catch (e) { continue; }
     }
+
     if (!workingUrl || !$) return listings;
 
     let page = 1;
@@ -44,13 +65,12 @@ module.exports = {
         try { $ = await fetchHTML(`${workingUrl}?page=${page}`); } catch (e) { break; }
       }
 
-      // Nurtur platform cards: .property-card or .property--card__results
       let cards = $('.property-card, [class*="property--card__results"]').toArray();
       if (!cards.length) {
-        // Fallback: find divs containing price and property link
         cards = $('div').filter((i, el) => {
           const $el = $(el);
-          return ($el.find('.property-price--search').length > 0 || $el.text().match(/\u00a3[\d,]+\s*PCM/))
+          return ($el.find('.property-price--search').length > 0
+            || $el.text().match(/\u00a3[\d,]+\s*PCM/))
             && $el.find('img').length > 0
             && $el.find('a[href*="/propert"]').length > 0
             && $el.children().length >= 2
@@ -62,27 +82,26 @@ module.exports = {
       for (const card of cards) {
         try {
           const el = $(card);
-
           const link = el.find('a[href*="/properties-for-letting/"], a[href*="/property"]').first();
           const href = link.attr('href') || el.find('a').first().attr('href') || '';
           if (!href || href === '#') continue;
           const fullUrl = href.startsWith('http') ? href : BASE + href;
           const extId = href.replace(/\/$/, '').split('/').pop() || href;
 
-          // Nurtur price element
           const priceStr = el.find('.property-price--search, .property-price, [class*="price"]').first().text().trim();
           const price = parsePrice(priceStr);
           if (!price || price > 10000) continue;
 
-          // Nurtur address element
           const address = el.find('.property-title--search, .property-title, [class*="title"]').first().text().trim()
             || el.find('h2, h3, h4').first().text().trim();
           if (!address) continue;
 
-          // Image
+          // FIX: Filter to Manchester area only
+          if (!isManchesterArea(address)) continue;
+
+          // Use extractImage for proper lazy-load handling
           const img = el.find('img').first();
-          const imgSrc = img.attr('src') || img.attr('data-src') || '';
-          const photo = imgSrc && !imgSrc.startsWith('data:') ? (imgSrc.startsWith('http') ? imgSrc : `https:${imgSrc}`) : '';
+          const photo = extractImage(img);
 
           const postcode = extractPostcode(address);
           const area = guessArea(address, postcode);
