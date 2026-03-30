@@ -20,4 +20,5 @@ module.exports = [
   require('./beyond'),
   require('./letme'),
   require('./belvoir'),
+  require('./openrent'),
 ];
