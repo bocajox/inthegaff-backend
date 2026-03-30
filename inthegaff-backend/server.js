@@ -36,14 +36,16 @@ function runScrapers() {
 }
 
 (async () => {
-  await initDB();
-  app.listen(PORT, () => console.log(`🏠 InTheGaff API running on port ${PORT}`));
-
-  // First scrape 2 minutes after boot, then every 20 minutes
-  setTimeout(() => {
-    runScrapers();
-    setInterval(runScrapers, 20 * 60 * 1000);
-  }, 2 * 60 * 1000);
-
-  console.log('⏱  First scrape in 2 min, then every 20 min — isolated subprocess');
+  try {
+    await initDB();
+    app.listen(PORT, () => console.log(`🏠 InTheGaff API running on port ${PORT}`));
+    setTimeout(() => {
+      runScrapers();
+      setInterval(runScrapers, 20 * 60 * 1000);
+    }, 2 * 60 * 1000);
+    console.log('⏱  First scrape in 2 min, then every 20 min — isolated subprocess');
+  } catch (err) {
+    console.error('💥 Startup failed:', err.message);
+    process.exit(1);
+  }
 })();
