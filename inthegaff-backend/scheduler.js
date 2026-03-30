@@ -126,7 +126,7 @@ async function runAll() {
 
 function startScheduler() {
   // Run immediately on startup, then every 20 minutes
-  runAll();
+
   cron.schedule('*/20 * * * *', runAll);
   console.log('⏱  Scraper scheduled every 20 minutes');
 }
