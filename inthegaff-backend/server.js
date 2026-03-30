@@ -9,7 +9,8 @@ const { startScheduler } = require('./scheduler');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-
+process.on('uncaughtException', (err) => { console.error('💥 Uncaught Exception:', err.message, err.stack); });
+process.on('unhandledRejection', (reason) => { console.error('💥 Unhandled Rejection:', reason); });
 // ── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
