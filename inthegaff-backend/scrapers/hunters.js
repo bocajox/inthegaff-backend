@@ -11,11 +11,12 @@ module.exports = {
   async scrape() {
     const listings = [];
 
-    // Hunters uses search-results pages
+    // Hunters uses Nurtur platform (same as Belvoir)
+    // Property cards use .property--card__results class
     const urls = [
+      `${BASE}/estate-agents-and-letting-agents/branch/manchester/property-to-rent/`,
+      `${BASE}/search-results/to-let/in-manchester/`,
       `${BASE}/search-results/to-let/?location=Manchester`,
-      `${BASE}/search-results/to-let/Manchester/`,
-      `${BASE}/property-for-rent/search?location=Manchester`,
     ];
 
     let $ = null;
@@ -23,7 +24,13 @@ module.exports = {
     for (const url of urls) {
       try {
         $ = await fetchHTML(url);
-        if ($.text().includes('\u00a3') || $('[class*="property"]').length > 0) {
+        // Check for Nurtur property cards or price mentions
+        if ($('.property-card, .property--card__results, [class*="property-card"]').length > 0
+            || ($('.property-price--search').length > 0)) {
+          workingUrl = url;
+          break;
+        }
+        if ($.text().includes('PCM') && $('[class*="property"]').length > 2) {
           workingUrl = url;
           break;
         }
@@ -34,61 +41,72 @@ module.exports = {
     let page = 1;
     while (true) {
       if (page > 1) {
-        const sep = workingUrl.includes('?') ? '&' : '?';
-        try { $ = await fetchHTML(`${workingUrl}${sep}page=${page}`); } catch (e) { break; }
+        try { $ = await fetchHTML(`${workingUrl}?page=${page}`); } catch (e) { break; }
       }
 
-      let cards = $('[class*="PropertyCard"], [class*="property-card"], [class*="property_card"], article[class*="property"]').toArray();
+      // Nurtur platform cards: .property-card or .property--card__results
+      let cards = $('.property-card, [class*="property--card__results"]').toArray();
       if (!cards.length) {
-        cards = $('article, .card, div').filter((i, el) => {
+        // Fallback: find divs containing price and property link
+        cards = $('div').filter((i, el) => {
           const $el = $(el);
-          return $el.find('a[href*="/property"]').length > 0
-            && $el.text().includes('\u00a3')
-            && $el.find('img').length > 0;
+          return ($el.find('.property-price--search').length > 0 || $el.text().match(/\u00a3[\d,]+\s*PCM/))
+            && $el.find('img').length > 0
+            && $el.find('a[href*="/propert"]').length > 0
+            && $el.children().length >= 2
+            && $el.children().length < 15;
         }).toArray();
       }
       if (!cards.length) break;
 
       for (const card of cards) {
-        const el = $(card);
-        const link = el.find('a[href*="/property/"], a[href*="/to-let/"]').first();
-        const href = link.attr('href') || el.find('a').first().attr('href') || '';
-        if (!href || href === '#') continue;
-        const fullUrl = href.startsWith('http') ? href : BASE + href;
-        const extId = href.replace(/\/$/, '').split('/').pop() || href;
+        try {
+          const el = $(card);
 
-        const priceStr = el.find('[class*="price"], [class*="Price"]').first().text().trim()
-          || el.text().match(/\u00a3[\d,]+/)?.[0] || '';
-        const address = el.find('[class*="address"], [class*="Address"], h2, h3').first().text().trim();
-        const bedsStr = el.find('[class*="bed"], [class*="Bed"]').first().text().trim();
-        const imgSrc = extractImage(el.find('img').first());
+          const link = el.find('a[href*="/properties-for-letting/"], a[href*="/property"]').first();
+          const href = link.attr('href') || el.find('a').first().attr('href') || '';
+          if (!href || href === '#') continue;
+          const fullUrl = href.startsWith('http') ? href : BASE + href;
+          const extId = href.replace(/\/$/, '').split('/').pop() || href;
 
-        const price = parsePrice(priceStr);
-        if (!price) continue;
+          // Nurtur price element
+          const priceStr = el.find('.property-price--search, .property-price, [class*="price"]').first().text().trim();
+          const price = parsePrice(priceStr);
+          if (!price || price > 10000) continue;
 
-        const postcode = extractPostcode(address);
-        const area = guessArea(address, postcode);
-        const desc = el.find('p, [class*="desc"]').first().text().trim();
+          // Nurtur address element
+          const address = el.find('.property-title--search, .property-title, [class*="title"]').first().text().trim()
+            || el.find('h2, h3, h4').first().text().trim();
+          if (!address) continue;
 
-        listings.push({
-          externalId: extId,
-          title: address,
-          price,
-          beds: parseBeds(bedsStr || address),
-          type: parseType(address),
-          area,
-          street: address,
-          postcode,
-          description: desc,
-          photos: imgSrc ? [imgSrc] : [],
-          features: [],
-          furnished: hasFeature(desc, ['furnished']),
-          parking:   hasFeature(desc, ['parking']),
-          pets:      hasFeature(desc, ['pets']),
-          garden:    hasFeature(desc, ['garden']),
-          balcony:   hasFeature(desc, ['balcony']),
-          listingUrl: fullUrl,
-        });
+          // Image
+          const img = el.find('img').first();
+          const imgSrc = img.attr('src') || img.attr('data-src') || '';
+          const photo = imgSrc && !imgSrc.startsWith('data:') ? (imgSrc.startsWith('http') ? imgSrc : `https:${imgSrc}`) : '';
+
+          const postcode = extractPostcode(address);
+          const area = guessArea(address, postcode);
+
+          listings.push({
+            externalId: extId,
+            title: address,
+            price,
+            beds: parseBeds(el.text()),
+            type: parseType(el.text()),
+            area,
+            street: address,
+            postcode,
+            description: '',
+            photos: photo ? [photo] : [],
+            features: [],
+            furnished: null,
+            parking: false,
+            pets: false,
+            garden: false,
+            balcony: false,
+            listingUrl: fullUrl,
+          });
+        } catch (e) { continue; }
       }
 
       const hasNext = $('a[rel="next"], [aria-label="Next"], .next').length > 0;
