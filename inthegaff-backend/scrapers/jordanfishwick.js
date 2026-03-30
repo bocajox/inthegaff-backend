@@ -1,4 +1,4 @@
-const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostcode, guessArea, hasFeature } = require('./_helpers');
+const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostcode, guessArea, hasFeature, findCards } = require('./_helpers');
 
 const BASE = 'https://jordanfishwick.co.uk';
 
@@ -10,57 +10,122 @@ module.exports = {
 
   async scrape() {
     const listings = [];
+    const seen = new Set();
+
+    // Try multiple URL patterns -- site may use different paths
+    const urlPatterns = [
+      `${BASE}/search/?department=residential-lettings`,
+      `${BASE}/property-search/?department=residential-lettings`,
+      `${BASE}/for-rent/`,
+    ];
+
+    let startUrl = null;
+    let $;
+
+    // Find the first URL that works and has listings
+    for (const testUrl of urlPatterns) {
+      try {
+        $ = await fetchHTML(testUrl);
+        const hasContent = $('a[href*="/property/"]').length > 0 ||
+                          $('[class*="price"]').length > 0 ||
+                          $('body').text().includes('\u00a3');
+        if (hasContent) {
+          startUrl = testUrl;
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    if (!startUrl || !$) return listings;
+
     let page = 1;
+    let firstPage = true;
 
     while (true) {
-      const url = page === 1
-        ? `${BASE}/search/?department=residential-lettings`
-        : `${BASE}/search/page/${page}/?department=residential-lettings`;
+      if (!firstPage) {
+        let url;
+        if (startUrl.includes('/search/')) {
+          url = `${BASE}/search/page/${page}/?department=residential-lettings`;
+        } else if (startUrl.includes('/property-search/')) {
+          url = `${BASE}/property-search/page/${page}/?department=residential-lettings`;
+        } else {
+          url = `${BASE}/for-rent/page/${page}/`;
+        }
+        try {
+          $ = await fetchHTML(url);
+        } catch (e) {
+          break;
+        }
+      }
+      firstPage = false;
 
-      let $;
-      try { $ = await fetchHTML(url); } catch (e) { break; }
-
-      // Jordan Fishwick uses Bootstrap .card elements (not <a> tags)
-      // Cards have class "card text-decoration-none text-body"
-      let cards = $('.card').filter((i, el) => {
-        const $el = $(el);
-        return $el.text().includes('\u00a3') && $el.find('img').length > 0;
-      }).toArray();
+      let cards = findCards($, [
+        'ul.properties li',
+        '.propertyhive-property',
+        'a.card',
+        '.card.text-decoration-none',
+        '[class*="property-card"]',
+        '[class*="property_card"]',
+        'article.property',
+      ]);
 
       if (!cards.length) {
-        // Fallback: try PropertyHive selectors
-        cards = $('ul.properties li, .propertyhive-property, a.card').toArray();
+        cards = $('.card').filter((i, el) => {
+          const $el = $(el);
+          const text = $el.text();
+          return (text.includes('\u00a3') || $el.find('[class*="price"]').length > 0) &&
+                 ($el.find('a').length > 0 || $el.is('a'));
+        }).toArray();
       }
+
+      if (!cards.length) {
+        cards = $('div, article, li').filter((i, el) => {
+          const $el = $(el);
+          return $el.find('a[href*="/property/"]').length > 0 &&
+                 ($el.text().includes('\u00a3') || $el.find('[class*="price"]').length > 0) &&
+                 $el.find('img').length > 0 &&
+                 $el.children().length >= 2 &&
+                 $el.children().length < 20 &&
+                 $el.text().length < 2000;
+        }).toArray();
+      }
+
       if (!cards.length) break;
 
       for (const card of cards) {
         try {
           const el = $(card);
 
-          // Link — card may be an <a>, or find inner <a>
-          let href = el.is('a') ? el.attr('href') : el.find('a').first().attr('href') || '';
-          if (!href) continue;
+          let href = el.is('a') ? el.attr('href') : '';
+          if (!href) {
+            href = el.find('a[href*="/property/"]').first().attr('href') ||
+                   el.find('a').first().attr('href') || '';
+          }
+          if (!href || href === '#') continue;
+
           const fullUrl = href.startsWith('http') ? href : BASE + href;
+          if (seen.has(fullUrl)) continue;
+          seen.add(fullUrl);
+
           const extId = href.replace(/\/$/, '').split('/').pop() || href;
 
-          // Price: .price or [class*="price"]
-          const priceStr = el.find('.price, [class*="price"]').first().text().trim()
-            || el.text().match(/\u00a3[\d,]+/)?.[0] || '';
+          const priceStr = el.find('.price, [class*="price"]').first().text().trim() ||
+                          el.text().match(/\u00a3[\d,]+\s*(?:pcm|pm|PCM|PM)?/)?.[0] || '';
           const price = parsePrice(priceStr);
-          if (!price) continue;
+          if (!price || price > 10000) continue;
 
-          // Address: h5.card-title, .card-title, h2, h3
-          const address = el.find('h5.card-title, .card-title, h5, h4, h3, h2').first().text().trim();
+          const address = el.find('h5.card-title, .card-title, h5, h4, h3, h2, [class*="address"], [class*="title"]').first().text().trim();
 
-          // Beds
-          const bedsStr = el.find('[class*="bed"], .beds').first().text().trim()
-            || el.text().match(/(\d+)\s*bed/i)?.[0] || '';
+          const bedsStr = el.find('[class*="bed"], .beds').first().text().trim() ||
+                         el.text().match(/(\d+)\s*bed/i)?.[0] || '';
 
-          // Image
           const imgSrc = extractImage(el.find('img').first());
 
           const postcode = extractPostcode(address);
           const area = guessArea(address, postcode);
+          const desc = el.find('p, [class*="desc"]').first().text().trim();
 
           listings.push({
             externalId: extId,
@@ -71,20 +136,22 @@ module.exports = {
             area,
             street: address,
             postcode,
-            description: '',
+            description: desc,
             photos: imgSrc ? [imgSrc] : [],
             features: [],
-            furnished: hasFeature(address, ['furnished']),
-            parking:   hasFeature(address, ['parking', 'garage']),
-            pets:      hasFeature(address, ['pets']),
-            garden:    hasFeature(address, ['garden']),
-            balcony:   hasFeature(address, ['balcony', 'terrace']),
+            furnished: hasFeature(desc || address, ['furnished']),
+            parking: hasFeature(desc || address, ['parking', 'garage']),
+            pets: hasFeature(desc || address, ['pets']),
+            garden: hasFeature(desc || address, ['garden']),
+            balcony: hasFeature(desc || address, ['balcony', 'terrace']),
             listingUrl: fullUrl,
           });
-        } catch (e) { continue; }
+        } catch (e) {
+          continue;
+        }
       }
 
-      const hasNext = $('a[rel="next"], .next, .pagination .next, a:contains("Next")').length > 0;
+      const hasNext = $('a[rel="next"], .next, .pagination .next, a:contains("Next"), [aria-label="Next"]').length > 0;
       if (!hasNext || page >= 10) break;
       page++;
       await new Promise(r => setTimeout(r, 1500));
