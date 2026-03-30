@@ -1,51 +1,51 @@
-require('dotenv').config();
-const express = require('express');
-const cors    = require('cors');
-const path    = require('path');
-const { fork } = require('child_process');
-const { initDB } = require('./db');
-const listingsRouter = require('./routes/listings');
-const agentsRouter   = require('./routes/agents');
-const statsRouter    = require('./routes/stats');
+const express = require("express");
+const cors = require("cors");
+const pool = require("./db");
+const listingsRouter = require("./routes/listings");
+const { runAll } = require("./scheduler");
 
-const app  = express();
-const PORT = process.env.PORT || 3000;
-
-process.on('uncaughtException',  (err) => console.error('💥 Uncaught Exception:', err.message, err.stack));
-process.on('unhandledRejection', (reason) => console.error('💥 Unhandled Rejection:', reason));
-
+const app = express();
 app.use(cors());
 app.use(express.json());
-app.get('/', (req, res) => res.json({ status: 'ok', app: 'InTheGaff API', version: '1.0.0' }));
-app.use('/api/listings', listingsRouter);
-app.use('/api/agents',   agentsRouter);
-app.use('/api/stats',    statsRouter);
 
-let scraperRunning = false;
+app.use("/api/listings", listingsRouter);
 
-function runScrapers() {
-  if (scraperRunning) {
-    console.log('⏭  Scraper already running — skipping this cycle');
-    return;
-  }
-  scraperRunning = true;
-  console.log('🔄 Launching scraper subprocess…');
-  const child = fork(path.join(__dirname, 'scheduler.js'), [], { env: process.env });
-  child.on('exit',  (code) => { console.log(`✅ Scraper done (exit ${code})`); scraperRunning = false; });
-  child.on('error', (err)  => { console.error('💥 Scraper error:', err.message); scraperRunning = false; });
-}
-
-(async () => {
+app.get("/health", async (_req, res) => {
   try {
-    await initDB();
-    app.listen(PORT, () => console.log(`🏠 InTheGaff API running on port ${PORT}`));
-    setTimeout(() => {
-      runScrapers();
-      setInterval(runScrapers, 20 * 60 * 1000);
-    }, 2 * 60 * 1000);
-    console.log('⏱  First scrape in 2 min, then every 20 min — isolated subprocess');
-  } catch (err) {
-    console.error('💥 Startup failed:', err.message);
-    process.exit(1);
+    await pool.query("SELECT 1");
+    const mem = process.memoryUsage();
+    res.json({
+      status: "ok",
+      version: "2.0.0",
+      heapMB: Math.round(mem.heapUsed / 1048576),
+      rssMB: Math.round(mem.rss / 1048576),
+    });
+  } catch (e) {
+    res.status(500).json({ status: "db_error", message: e.message });
   }
-})();
+});
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`[server] v2.0.0 listening on ${PORT}`);
+
+  let scraperRunning = false;
+
+  const runScrapers = async () => {
+    if (scraperRunning) {
+      console.log("[server] scraper already running, skipping");
+      return;
+    }
+    scraperRunning = true;
+    try {
+      await runAll(pool);
+    } catch (e) {
+      console.error("[server] scraper error:", e.message);
+    } finally {
+      scraperRunning = false;
+    }
+  };
+
+  setTimeout(runScrapers, 2 * 60 * 1000);
+  setInterval(runScrapers, 20 * 60 * 1000);
+});
