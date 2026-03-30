@@ -2,97 +2,71 @@ const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostco
 
 const BASE = 'https://jordanfishwick.co.uk';
 
-// Extra headers that mimic a real browser visit more convincingly
-const EXTRA = {
-  'Referer':    'https://www.google.co.uk/',
-  'Connection': 'keep-alive',
-};
-
 module.exports = {
-  id:      'jordanfishwick',
-  name:    'Jordan Fishwick',
+  id: 'jordanfishwick',
+  name: 'Jordan Fishwick',
   website: BASE,
-  areas:   ['Chorlton', 'Didsbury', 'Withington', 'Sale', 'Altrincham'],
+  areas: ['Chorlton', 'Didsbury', 'Withington', 'Sale', 'Altrincham'],
 
   async scrape() {
     const listings = [];
-    // Try multiple URL patterns — they changed their site structure
-    const candidates = [
-      `${BASE}/properties/lettings/`,
-      `${BASE}/properties/to-rent/`,
-      `${BASE}/property/to-let/`,
-      `${BASE}/search/?type=to-let`,
-      `${BASE}/properties/?type=to-let`,
-    ];
-
-    let workingBase = null;
-    for (const url of candidates) {
-      try {
-        const $ = await fetchHTML(url, EXTRA);
-        if ($('body').text().length > 500) { workingBase = url; break; }
-      } catch (e) { continue; }
-    }
-    if (!workingBase) return listings;
-
     let page = 1;
-    while (true) {
-      const sep = workingBase.includes('?') ? '&' : '?';
-      const url = page === 1 ? workingBase : `${workingBase}${sep}page=${page}`;
-      let $;
-      try {
-        $ = await fetchHTML(url, EXTRA);
-      } catch (e) { break; }
 
-      const cards = $(
-        '.property-item, .property-card, [class*="PropertyItem"], [class*="PropertyCard"], ' +
-        'article.listing, article.property, [class*="property-result"], [class*="listing-card"]'
-      ).toArray();
+    while (true) {
+      const url = page === 1
+        ? `${BASE}/search/?department=residential-lettings`
+        : `${BASE}/search/page/${page}/?department=residential-lettings`;
+
+      let $;
+      try { $ = await fetchHTML(url); } catch (e) { break; }
+
+      let cards = $('a.card').toArray();
+      if (!cards.length) cards = $('ul.properties li, .propertyhive-property').toArray();
       if (!cards.length) break;
 
       for (const card of cards) {
-        const el      = $(card);
-        const link    = el.find('a').first();
-        const href    = link.attr('href') || '';
+        const el = $(card);
+        let href = el.is('a') ? el.attr('href') : el.find('a').first().attr('href') || '';
+        if (!href) continue;
         const fullUrl = href.startsWith('http') ? href : BASE + href;
-        const extId   = href.replace(/\/$/, '').split('/').pop() || href;
+        const extId = href.replace(/\/$/, '').split('/').pop() || href;
 
-        const priceStr = el.find('[class*="price"], [class*="Price"]').first().text().trim();
-        const address  = el.find('[class*="address"], [class*="title"], [class*="Address"], h2, h3').first().text().trim();
-        const bedsStr  = el.find('[class*="beds"], [class*="bedroom"], [class*="Bed"]').first().text().trim();
-        const imgSrc   = extractImage(el.find('img').first());
+        const priceStr = el.find('.price.h5, .price, [class*="price"]').first().text().trim();
+        const address = el.find('h5.card-title, .card-title, [class*="address"], h2, h3').first().text().trim();
+        const bedsStr = el.find('p.ms-2.me-3.mb-0, .beds, [class*="bed"]').first().text().trim();
+        const imgSrc = extractImage(el.find('img').first());
 
         const price = parsePrice(priceStr);
         if (!price) continue;
 
         const postcode = extractPostcode(address);
-        const area     = guessArea(address, postcode);
-        const desc     = el.find('p').first().text().trim();
+        const area = guessArea(address, postcode);
 
         listings.push({
-          externalId:  extId,
-          title:       address,
+          externalId: extId,
+          title: address,
           price,
-          beds:        parseBeds(bedsStr || address),
-          type:        parseType(address),
+          beds: parseBeds(bedsStr || address),
+          type: parseType(address),
           area,
-          street:      address,
+          street: address,
           postcode,
-          description: desc,
-          photos:      imgSrc ? [imgSrc] : [],
-          features:    [],
-          furnished:   hasFeature(desc + address, ['furnished']),
-          parking:     hasFeature(desc + address, ['parking', 'garage']),
-          pets:        hasFeature(desc + address, ['pets considered', 'pets welcome']),
-          garden:      hasFeature(desc + address, ['garden']),
-          balcony:     hasFeature(desc + address, ['balcony', 'terrace']),
-          listingUrl:  fullUrl,
+          description: '',
+          photos: imgSrc ? [imgSrc] : [],
+          features: [],
+          furnished: hasFeature(address, ['furnished']),
+          parking:   hasFeature(address, ['parking', 'garage']),
+          pets:      hasFeature(address, ['pets']),
+          garden:    hasFeature(address, ['garden']),
+          balcony:   hasFeature(address, ['balcony', 'terrace']),
+          listingUrl: fullUrl,
         });
       }
 
-      const hasNext = $('a[rel="next"], .next-page, [class*="pagination"] .next, [aria-label="Next"]').length > 0;
-      if (!hasNext || page >= 15) break;
+      const hasNext = $('.propertyhive-pagination a.next, a[rel="next"], .next-page').length > 0;
+      if (!hasNext || page >= 10) break;
       page++;
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 1500));
     }
 
     return listings;
