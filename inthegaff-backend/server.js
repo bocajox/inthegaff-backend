@@ -1,37 +1,68 @@
-const express = require("express");
-const cors = require("cors");
-const { pool } = require("./db");
-const listingsRouter = require("./routes/listings");
-const statsRouter = require("./routes/stats");
-const agentsRouter = require("./routes/agents");
-const { runAll } = require("./scheduler");
+require('dotenv').config();
+const express = require('express');
+const cors    = require('cors');
+const { initDB } = require('./db');
+const listingsRouter = require('./routes/listings');
+const agentsRouter   = require('./routes/agents');
+const statsRouter    = require('./routes/stats');
+const { runAll }     = require('./scheduler');
 
-const app = express();
+const app  = express();
+const PORT = process.env.PORT || 3000;
+
+// ── Crash protection ─────────────────────────────────────────────────────────
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 Unhandled Rejection:', reason);
+});
+
+// ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
 
-app.use("/api/listings", listingsRouter);
-app.use("/api/stats", statsRouter);
-app.use("/api/agents", agentsRouter);
+// ── Health check ─────────────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', app: 'InTheGaff API', version: '2.0.0' });
+});
 
-app.get("/health", async (_req, res) => {
-  try {
-    await pool.query("SELECT 1");
-    const mem = process.memoryUsage();
-    res.json({
-      status: "ok",
-      version: "2.0.0",
-      heapMB: Math.round(mem.heapUsed / 1048576),
-      rssMB: Math.round(mem.rss / 1048576),
-    });
-  } catch (e) {
-    res.status(500).json({ status: "db_error", message: e.message });
+// ── Routes ───────────────────────────────────────────────────────────────────
+app.use('/api/listings', listingsRouter);
+app.use('/api/agents',   agentsRouter);
+app.use('/api/stats',    statsRouter);
+
+// ── Scraper lock ─────────────────────────────────────────────────────────────
+let scraperRunning = false;
+
+async function runScrapers() {
+  if (scraperRunning) {
+    console.log('⏭  Scraper already running, skipping');
+    return;
   }
-});
+  scraperRunning = true;
+  try {
+    await runAll();
+  } catch (err) {
+    console.error('💥 Scraper run failed:', err.message);
+  } finally {
+    scraperRunning = false;
+  }
+}
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  setTimeout(() => runAll(), 2 * 60 * 1000);
-  setInterval(() => runAll(), 20 * 60 * 1000);
-});
+// ── Boot ─────────────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    await initDB();
+    app.listen(PORT, () => console.log(`🏠 InTheGaff API running on port ${PORT}`));
+
+    // First scrape after 2 min (let server warm up), then every 60 min
+    setTimeout(() => {
+      runScrapers();
+      setInterval(runScrapers, 60 * 60 * 1000);
+    }, 2 * 60 * 1000);
+  } catch (err) {
+    console.error('💥 Startup failed:', err.message);
+    process.exit(1);
+  }
+})();

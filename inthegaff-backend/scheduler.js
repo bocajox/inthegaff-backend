@@ -11,6 +11,7 @@
 
 const { pool, initDB } = require('./db');
 const scrapers = require('./scrapers');
+const { extractPostcode, guessArea, generateTitle } = require('./scrapers/_helpers');
 
 const SCRAPER_TIMEOUT = 55000; // 55 seconds per scraper
 const MEMORY_WARN_MB = 350;   // Warn if heap exceeds this
@@ -32,8 +33,16 @@ function tryGC() {
 }
 
 // ── Save one listing to the database ────────────────────────────────────────
+// Auto-fills missing title, postcode, and area so scrapers don't have to.
 async function saveListing(listing, agentId) {
   try {
+    // Auto-fill postcode from street if missing
+    const postcode = listing.postcode || extractPostcode(listing.street || '');
+    // Auto-fill area from street + postcode if missing
+    const area = listing.area || guessArea(listing.street || '', postcode);
+    // Auto-generate title if scraper left it empty
+    const title = listing.title || generateTitle(listing.street, listing.beds, listing.type, area);
+
     await pool.query(`
       INSERT INTO listings (
         agent_id, external_id, title, price, beds, type, area, street, postcode,
@@ -45,23 +54,26 @@ async function saveListing(listing, agentId) {
         $16, $17, $18, true, true, NOW(), NOW()
       )
       ON CONFLICT (agent_id, external_id) DO UPDATE SET
+        title = CASE WHEN EXCLUDED.title != '' THEN EXCLUDED.title ELSE listings.title END,
         price = EXCLUDED.price,
-        description = EXCLUDED.description,
-        photos = EXCLUDED.photos,
+        description = CASE WHEN EXCLUDED.description != '' THEN EXCLUDED.description ELSE listings.description END,
+        photos = CASE WHEN EXCLUDED.photos != '[]' THEN EXCLUDED.photos ELSE listings.photos END,
         features = EXCLUDED.features,
         listing_url = EXCLUDED.listing_url,
+        area = CASE WHEN EXCLUDED.area != '' THEN EXCLUDED.area ELSE listings.area END,
+        postcode = CASE WHEN EXCLUDED.postcode != '' THEN EXCLUDED.postcode ELSE listings.postcode END,
         is_active = true,
         last_seen = NOW()
     `, [
       agentId,
       listing.externalId || listing.listingUrl || '',
-      listing.title || '',
+      title,
       listing.price || 0,
       listing.beds || 0,
       listing.type || 'flat',
-      listing.area || '',
+      area,
       listing.street || '',
-      listing.postcode || '',
+      postcode,
       listing.description || '',
       JSON.stringify(listing.photos || []),
       JSON.stringify(listing.features || []),
@@ -208,7 +220,7 @@ async function runAll() {
 function startScheduler() {
   setInterval(() => {
     runAll().catch(err => console.error('💥 Scraper run failed:', err.message));
-  }, 20 * 60 * 1000);
+  }, 60 * 60 * 1000); // Once per hour — saves Railway resources
 }
 
 // ── Direct execution (forked or standalone) ─────────────────────────────────
