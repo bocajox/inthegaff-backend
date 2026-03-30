@@ -1,4 +1,4 @@
-const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostcode, guessArea, hasFeature } = require('./_helpers');
+const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostcode, guessArea, hasFeature, findCards } = require('./_helpers');
 
 const BASE = 'https://www.philipjames.co.uk';
 
@@ -10,63 +10,96 @@ module.exports = {
 
   async scrape() {
     const listings = [];
+    const seen = new Set();
+
+    const urlPatterns = [
+      `${BASE}/property-search/?department=residential-lettings`,
+      `${BASE}/property-search/`,
+      `${BASE}/search/?department=residential-lettings`,
+      `${BASE}/properties/to-let/`,
+    ];
+
+    let startUrl = null;
+    let $;
+
+    for (const testUrl of urlPatterns) {
+      try {
+        $ = await fetchHTML(testUrl);
+        const hasContent = $('a[href*="/property/"]').length > 0 ||
+                          $('[class*="price"]').length > 0 ||
+                          $('body').text().includes('\u00a3');
+        if (hasContent) {
+          startUrl = testUrl;
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    if (!startUrl || !$) return listings;
+
     let page = 1;
+    let firstPage = true;
 
     while (true) {
-      // Correct URL: /property-search/ (NOT /search/?department=...)
-      const url = page === 1
-        ? `${BASE}/property-search/?department=residential-lettings`
-        : `${BASE}/property-search/page/${page}/?department=residential-lettings`;
-
-      let $;
-      try { $ = await fetchHTML(url); } catch (e) {
-        // If department filter fails, try without it
-        if (page === 1) {
-          try { $ = await fetchHTML(`${BASE}/property-search/`); } catch (e2) { break; }
-        } else { break; }
+      if (!firstPage) {
+        const baseForPage = startUrl.split('?')[0];
+        const params = startUrl.includes('?') ? '?' + startUrl.split('?')[1] : '';
+        const url = `${baseForPage}page/${page}/${params}`;
+        try {
+          $ = await fetchHTML(url);
+        } catch (e) {
+          break;
+        }
       }
+      firstPage = false;
 
-      // Philip James uses div cards with .details class
-      // Also try PropertyHive and general selectors
-      let cards = $('div').filter((i, el) => {
-        const $el = $(el);
-        return $el.find('img').length > 0
-          && $el.find('a[href*="/property/"]').length > 0
-          && $el.text().includes('\u00a3')
-          && $el.children().length >= 2
-          && $el.children().length < 15
-          && $el.text().length < 1000;
-      }).toArray();
+      let cards = findCards($, [
+        'ul.properties li',
+        '.propertyhive-property',
+        '[class*="property-card"]',
+        '[class*="property_card"]',
+        'article.property',
+        'a.card',
+        '.card',
+      ]);
 
       if (!cards.length) {
-        cards = $('ul.properties li, .propertyhive-property, a.card, [class*="property-card"]').toArray();
-      }
-      if (!cards.length) {
-        cards = $('article').filter((i, el) => {
-          return $(el).text().includes('\u00a3');
+        cards = $('div, article, li').filter((i, el) => {
+          const $el = $(el);
+          return ($el.find('a[href*="/property/"]').length > 0 || $el.find('a[href*="/properties/"]').length > 0) &&
+                 ($el.text().includes('\u00a3') || $el.find('[class*="price"]').length > 0) &&
+                 $el.children().length >= 2 &&
+                 $el.children().length < 20 &&
+                 $el.text().length < 2000;
         }).toArray();
       }
+
       if (!cards.length) break;
 
-      const seen = new Set();
       for (const card of cards) {
         try {
           const el = $(card);
-          const link = el.is('a') ? el : el.find('a[href*="/property/"], a').first();
+
+          const link = el.is('a') ? el : el.find('a[href*="/property/"], a[href*="/properties/"], a').first();
           const href = link.attr('href') || '';
-          if (!href || href === '#' || seen.has(href)) continue;
-          seen.add(href);
+          if (!href || href === '#') continue;
+
           const fullUrl = href.startsWith('http') ? href : BASE + href;
+          if (seen.has(fullUrl)) continue;
+          seen.add(fullUrl);
+
           const extId = href.replace(/\/$/, '').split('/').pop() || href;
 
-          const priceStr = el.find('.price, [class*="price"]').first().text().trim()
-            || el.text().match(/\u00a3[\d,]+\s*(?:pcm|pm|PCM)?/)?.[0] || '';
-          const address = el.find('.address, [class*="address"], h2, h3, h4, h5, .card-title').first().text().trim();
-          const bedsStr = el.find('[class*="bed"], .beds').first().text().trim();
-          const imgSrc = extractImage(el.find('img').first());
-
+          const priceStr = el.find('.price, [class*="price"]').first().text().trim() ||
+                          el.text().match(/\u00a3[\d,]+\s*(?:pcm|pm|PCM|PM)?/)?.[0] || '';
           const price = parsePrice(priceStr);
           if (!price || price > 10000) continue;
+
+          const address = el.find('.address, [class*="address"], h2, h3, h4, h5, .card-title, [class*="title"]').first().text().trim();
+          const bedsStr = el.find('[class*="bed"], .beds').first().text().trim();
+          const imgSrc = extractImage(el.find('img').first());
 
           const postcode = extractPostcode(address);
           const area = guessArea(address, postcode);
@@ -85,13 +118,15 @@ module.exports = {
             photos: imgSrc ? [imgSrc] : [],
             features: [],
             furnished: hasFeature(desc, ['furnished']),
-            parking:   hasFeature(desc, ['parking', 'garage']),
-            pets:      hasFeature(desc, ['pets']),
-            garden:    hasFeature(desc, ['garden']),
-            balcony:   hasFeature(desc, ['balcony', 'terrace']),
+            parking: hasFeature(desc, ['parking', 'garage']),
+            pets: hasFeature(desc, ['pets']),
+            garden: hasFeature(desc, ['garden']),
+            balcony: hasFeature(desc, ['balcony', 'terrace']),
             listingUrl: fullUrl,
           });
-        } catch (e) { continue; }
+        } catch (e) {
+          continue;
+        }
       }
 
       const hasNext = $('a[rel="next"], .next, a:contains("Next"), [aria-label="Next"]').length > 0;
