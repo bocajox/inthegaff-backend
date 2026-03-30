@@ -3,73 +3,100 @@ const { fetchHTML, extractImage, parsePrice, parseBeds, parseType, extractPostco
 const BASE = 'https://www.hunters.com';
 
 module.exports = {
-  id:      'hunters',
-  name:    'Hunters',
+  id: 'hunters',
+  name: 'Hunters',
   website: BASE,
-  areas:   ['Manchester City Centre', 'Salford Quays', 'Hulme', 'Chorlton', 'Didsbury'],
+  areas: ['Manchester City Centre', 'Salford Quays', 'Hulme', 'Chorlton', 'Didsbury'],
 
   async scrape() {
     const listings = [];
-    // Hunters uses office-specific pages — try multiple South Manchester offices
-    const searchUrls = [
+
+    // Hunters uses search-results pages
+    const urls = [
+      `${BASE}/search-results/to-let/?location=Manchester`,
+      `${BASE}/search-results/to-let/Manchester/`,
       `${BASE}/property-for-rent/search?location=Manchester`,
-      `${BASE}/office/south-manchester/properties/lettings/`,
-      `${BASE}/office/manchester-city-centre/properties/lettings/`,
-      `${BASE}/office/manchester/properties/lettings/`,
-      `${BASE}/search?type=lettings&location=Manchester`,
     ];
 
-    for (const searchUrl of searchUrls) {
-      let page = 1;
-      while (true) {
-        const sep = searchUrl.includes('?') ? '&' : '?';
-        const url = page === 1 ? searchUrl : `${searchUrl}${sep}page=${page}`;
-        let $;
-        try { $ = await fetchHTML(url); } catch (e) { break; }
-
-        let cards = $(
-          '[class*="PropertyCard"], [class*="property-card"], article[class*="property"], ' +
-          '[class*="property-result"], [class*="listing-card"], .property, .property-card'
-        ).filter((i, el) => $(el).find('[class*="price"]').length > 0).toArray();
-
-        if (!cards.length) {
-          cards = $('article, .card').filter((i, el) =>
-            $(el).find('[class*="price"]').length > 0
-          ).toArray();
+    let $ = null;
+    let workingUrl = null;
+    for (const url of urls) {
+      try {
+        $ = await fetchHTML(url);
+        if ($.text().includes('\u00a3') || $('[class*="property"]').length > 0) {
+          workingUrl = url;
+          break;
         }
-        if (!cards.length) break;
-
-        for (const card of cards) {
-          const el      = $(card);
-          const href    = el.find('a[href*="/property/"]').first().attr('href') || el.find('a').first().attr('href') || '';
-          const fullUrl = href.startsWith('http') ? href : BASE + href;
-          const price   = parsePrice(el.find('[class*="price"]').first().text());
-          if (!price) continue;
-          const address  = el.find('[class*="address"], h2, h3').first().text().trim();
-          const postcode = extractPostcode(address);
-          const desc     = el.find('p').first().text().trim();
-          listings.push({
-            externalId: href.replace(/\/$/, '').split('/').pop() || href,
-            title: address, price,
-            beds: parseBeds(el.find('[class*="bed"]').first().text() || address),
-            type: parseType(address), area: guessArea(address, postcode),
-            street: address, postcode, description: desc,
-            photos: [extractImage(el.find('img').first())].filter(Boolean),
-            features: [],
-            furnished: hasFeature(desc, ['furnished']),
-            parking:   hasFeature(desc, ['parking']),
-            pets:      hasFeature(desc, ['pets']),
-            garden:    hasFeature(desc, ['garden']),
-            balcony:   hasFeature(desc, ['balcony']),
-            listingUrl: fullUrl,
-          });
-        }
-        if (!$('a[rel="next"], [aria-label="Next"]').length || page >= 10) break;
-        page++;
-        await new Promise(r => setTimeout(r, 1500));
-      }
-      await new Promise(r => setTimeout(r, 2000));
+      } catch (e) { continue; }
     }
+    if (!workingUrl || !$) return listings;
+
+    let page = 1;
+    while (true) {
+      if (page > 1) {
+        const sep = workingUrl.includes('?') ? '&' : '?';
+        try { $ = await fetchHTML(`${workingUrl}${sep}page=${page}`); } catch (e) { break; }
+      }
+
+      let cards = $('[class*="PropertyCard"], [class*="property-card"], [class*="property_card"], article[class*="property"]').toArray();
+      if (!cards.length) {
+        cards = $('article, .card, div').filter((i, el) => {
+          const $el = $(el);
+          return $el.find('a[href*="/property"]').length > 0
+            && $el.text().includes('\u00a3')
+            && $el.find('img').length > 0;
+        }).toArray();
+      }
+      if (!cards.length) break;
+
+      for (const card of cards) {
+        const el = $(card);
+        const link = el.find('a[href*="/property/"], a[href*="/to-let/"]').first();
+        const href = link.attr('href') || el.find('a').first().attr('href') || '';
+        if (!href || href === '#') continue;
+        const fullUrl = href.startsWith('http') ? href : BASE + href;
+        const extId = href.replace(/\/$/, '').split('/').pop() || href;
+
+        const priceStr = el.find('[class*="price"], [class*="Price"]').first().text().trim()
+          || el.text().match(/\u00a3[\d,]+/)?.[0] || '';
+        const address = el.find('[class*="address"], [class*="Address"], h2, h3').first().text().trim();
+        const bedsStr = el.find('[class*="bed"], [class*="Bed"]').first().text().trim();
+        const imgSrc = extractImage(el.find('img').first());
+
+        const price = parsePrice(priceStr);
+        if (!price) continue;
+
+        const postcode = extractPostcode(address);
+        const area = guessArea(address, postcode);
+        const desc = el.find('p, [class*="desc"]').first().text().trim();
+
+        listings.push({
+          externalId: extId,
+          title: address,
+          price,
+          beds: parseBeds(bedsStr || address),
+          type: parseType(address),
+          area,
+          street: address,
+          postcode,
+          description: desc,
+          photos: imgSrc ? [imgSrc] : [],
+          features: [],
+          furnished: hasFeature(desc, ['furnished']),
+          parking:   hasFeature(desc, ['parking']),
+          pets:      hasFeature(desc, ['pets']),
+          garden:    hasFeature(desc, ['garden']),
+          balcony:   hasFeature(desc, ['balcony']),
+          listingUrl: fullUrl,
+        });
+      }
+
+      const hasNext = $('a[rel="next"], [aria-label="Next"], .next').length > 0;
+      if (!hasNext || page >= 5) break;
+      page++;
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
     return listings;
   },
 };
