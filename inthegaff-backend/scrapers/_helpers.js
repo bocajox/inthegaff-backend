@@ -1,15 +1,11 @@
 // Shared helpers used across scrapers
-
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// Full browser-like headers to avoid 403s
 const DEFAULT_HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
     '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-  'Accept':
-    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,' +
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,' +
     'image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
   'Accept-Language': 'en-GB,en;q=0.9,en-US;q=0.8',
   'Accept-Encoding': 'gzip, deflate, br',
@@ -30,25 +26,21 @@ async function fetchHTML(url, extraHeaders = {}) {
   return cheerio.load(data);
 }
 
-// ── Centralised Manchester area filter ─────────────────────────────────────
-// Used by every scraper. One place to maintain, one place to test.
 const MANCHESTER_AREAS = [
   'manchester', 'salford', 'chorlton', 'didsbury', 'fallowfield',
   'withington', 'levenshulme', 'rusholme', 'hulme', 'ancoats',
   'northern quarter', 'whalley range', 'stretford', 'sale ',
-  'altrincham', 'stockport', 'moss side', 'old trafford',
-  'burnage', 'longsight', 'gorton', 'ardwick', 'openshaw',
-  'droylsden', 'denton', 'hyde', 'stalybridge', 'ashton-under-lyne',
-  'trafford', 'eccles', 'swinton', 'prestwich', 'whitefield',
-  'mediacity', 'castlefield', 'deansgate', 'spinningfields',
-  'piccadilly', 'cheetham', 'crumpsall', 'harpurhey', 'moston',
-  'newton heath', 'miles platting', 'beswick', 'clayton',
-  'reddish', 'heaton', 'urmston', 'flixton', 'davyhulme',
-  'irlam', 'walkden', 'worsley', 'pendlebury',
+  'altrincham', 'stockport', 'moss side', 'old trafford', 'burnage',
+  'longsight', 'gorton', 'ardwick', 'openshaw', 'droylsden',
+  'denton', 'hyde', 'stalybridge', 'ashton-under-lyne', 'trafford',
+  'eccles', 'swinton', 'prestwich', 'whitefield', 'mediacity',
+  'castlefield', 'deansgate', 'spinningfields', 'piccadilly',
+  'cheetham', 'crumpsall', 'harpurhey', 'moston', 'newton heath',
+  'miles platting', 'beswick', 'clayton', 'reddish', 'heaton',
+  'urmston', 'flixton', 'davyhulme', 'irlam', 'walkden', 'worsley',
+  'pendlebury',
 ];
 
-// Non-Manchester cities — if address contains these, reject immediately.
-// Prevents Hunters-style leaks (London NW6, Penzance, Sheffield, etc.)
 const NON_MANCHESTER_CITIES = [
   'london', 'birmingham', 'liverpool', 'leeds', 'sheffield',
   'bristol', 'nottingham', 'newcastle', 'leicester', 'coventry',
@@ -59,91 +51,69 @@ const NON_MANCHESTER_CITIES = [
   'sunderland', 'wolverhampton', 'aberdeen', 'dundee', 'swansea',
 ];
 
-// Manchester postcodes: M1–M60. Anything else (SK, WA, BL, OL, etc.) is
-// too broad and lets in Sheffield/Warrington/etc. We keep it strict.
 const MCR_POSTCODE_RE = /\bM(\d{1,2})\s*\d[A-Z]{2}\b/i;
 const MCR_DISTRICT_RE = /\bM(\d{1,2})\b/i;
 
 function isManchesterArea(address) {
   if (!address) return false;
   const lower = address.toLowerCase();
-
-  // Step 1: reject known non-Manchester cities
   if (NON_MANCHESTER_CITIES.some(city => lower.includes(city))) return false;
-
-  // Step 2: accept if full M-postcode present (M1 0AA through M60 9ZZ)
   const fullMatch = MCR_POSTCODE_RE.exec(address);
   if (fullMatch) {
     const district = parseInt(fullMatch[1]);
     if (district >= 1 && district <= 60) return true;
   }
-
-  // Step 3: accept if M-district code present (M14, M20, etc.)
   const distMatch = MCR_DISTRICT_RE.exec(address);
   if (distMatch) {
     const district = parseInt(distMatch[1]);
     if (district >= 1 && district <= 60) return true;
   }
-
-  // Step 4: accept if a known Manchester area name appears
   if (MANCHESTER_AREAS.some(area => lower.includes(area))) return true;
-
-  // Step 5: default deny
   return false;
 }
 
-// ── Image extraction ───────────────────────────────────────────────────────
-// Handles lazy-load attributes, srcset, background-image, and plain src.
 function extractImage(imgEl) {
   if (!imgEl || !imgEl.length) return '';
 
-  // Try lazy-load attributes first — these have the real URL
-  const dataSrc =
-    imgEl.attr('data-src') ||
-    imgEl.attr('data-lazy-src') ||
-    imgEl.attr('data-lazy') ||
-    imgEl.attr('data-original') ||
-    imgEl.attr('data-image') ||
-    imgEl.attr('data-url') ||
-    '';
+  // Helper to normalize protocol-relative URLs
+  function norm(url) {
+    if (url && url.startsWith('//')) return 'https:' + url;
+    return url;
+  }
 
-  if (dataSrc && !dataSrc.startsWith('data:')) return dataSrc;
-
-  // Try srcset (pick the largest image — last entry)
+  const dataSrc = imgEl.attr('data-src') || imgEl.attr('data-lazy-src') ||
+    imgEl.attr('data-lazy') || imgEl.attr('data-original') ||
+    imgEl.attr('data-image') || imgEl.attr('data-url') || '';
+  if (dataSrc && !dataSrc.startsWith('data:')) return norm(dataSrc);
   const srcsetRaw = imgEl.attr('srcset') || imgEl.attr('data-srcset') || '';
   if (srcsetRaw) {
     const entries = srcsetRaw.split(',').map(s => s.trim()).filter(Boolean);
     if (entries.length) {
-      // Pick last entry (usually largest), strip width descriptor
       const best = entries[entries.length - 1].split(' ')[0];
-      if (best && !best.startsWith('data:')) return best;
+      if (best && !best.startsWith('data:')) return norm(best);
     }
   }
-
-  // Fall back to src — but SKIP if it's a data URI placeholder
   const src = imgEl.attr('src') || '';
-  if (src && !src.startsWith('data:')) return src;
-
+  if (src && !src.startsWith('data:')) return norm(src);
   return '';
 }
 
-// Extract background-image URL from a Cheerio element's style attribute
 function extractBgImage(el) {
   if (!el || !el.length) return '';
   const style = el.attr('style') || '';
   const m = style.match(/background-image\s*:\s*url\(\s*['"]?([^'")\s]+)['"]?\s*\)/i);
-  return m ? m[1] : '';
+  const url = m ? m[1] : '';
+
+  // Normalize protocol-relative URLs
+  if (url && url.startsWith('//')) return 'https:' + url;
+  return url;
 }
 
-// ── Price parsing ──────────────────────────────────────────────────────────
-// "£1,250 pcm" → 1250
 function parsePrice(str = '') {
   const match = str.replace(/,/g, '').match(/\d+/);
   return match ? parseInt(match[0]) : null;
 }
 
-// ── Beds parsing ───────────────────────────────────────────────────────────
-// "3 bedroom" / "3 bed" / "Studio" → 0/1/2/3
 function parseBeds(str = '') {
   const s = str.toLowerCase();
   if (s.includes('studio')) return 0;
@@ -151,7 +121,6 @@ function parseBeds(str = '') {
   return m ? parseInt(m[1]) : 1;
 }
 
-// ── Type guessing ──────────────────────────────────────────────────────────
 function parseType(str = '') {
   const s = str.toLowerCase();
   if (s.includes('studio')) return 'studio';
@@ -164,13 +133,11 @@ function parseType(str = '') {
   return 'flat';
 }
 
-// ── Postcode extraction ────────────────────────────────────────────────────
 function extractPostcode(str = '') {
   const m = str.match(/[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}/i);
   return m ? m[0].toUpperCase() : '';
 }
 
-// ── Area guessing ──────────────────────────────────────────────────────────
 function guessArea(address = '', postcode = '') {
   const s = (address + ' ' + postcode).toLowerCase();
   if (s.includes('chorlton')) return 'Chorlton';
@@ -206,9 +173,6 @@ function guessArea(address = '', postcode = '') {
   return 'Manchester';
 }
 
-// ── Title generation ───────────────────────────────────────────────────────
-// Scrapers often leave title empty. This builds a useful one from components.
-// "2 Bed Flat in Didsbury" or "Studio in Ancoats"
 function generateTitle(street, beds, type, area) {
   const bedStr = beds === 0 ? 'Studio' : `${beds} Bed`;
   const typeStr = (beds === 0) ? '' : ` ${(type || 'flat').charAt(0).toUpperCase() + (type || 'flat').slice(1)}`;
@@ -216,13 +180,11 @@ function generateTitle(street, beds, type, area) {
   return `${bedStr}${typeStr}${areaStr}`;
 }
 
-// ── Feature detection ──────────────────────────────────────────────────────
 function hasFeature(text = '', keywords = []) {
   const t = text.toLowerCase();
   return keywords.some(k => t.includes(k));
 }
 
-// ── Card finder ────────────────────────────────────────────────────────────
 function findCards($, selectors) {
   for (const sel of selectors) {
     const found = $(sel).toArray();
@@ -232,8 +194,16 @@ function findCards($, selectors) {
 }
 
 module.exports = {
-  fetchHTML, extractImage, extractBgImage,
-  parsePrice, parseBeds, parseType,
-  extractPostcode, guessArea, hasFeature,
-  findCards, isManchesterArea, generateTitle,
+  fetchHTML,
+  extractImage,
+  extractBgImage,
+  parsePrice,
+  parseBeds,
+  parseType,
+  extractPostcode,
+  guessArea,
+  hasFeature,
+  findCards,
+  isManchesterArea,
+  generateTitle,
 };
