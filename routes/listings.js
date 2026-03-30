@@ -12,7 +12,7 @@ router.get('/', async (req, res) => {
       sort = 'newest', limit = 50, offset = 0
     } = req.query;
 
-    const conditions = ['l.is_active = true'];
+    const conditions = ['l.is_active = true', "l.listing_url IS NOT NULL AND l.listing_url != ''"];
     const values     = [];
     let   idx        = 1;
 
