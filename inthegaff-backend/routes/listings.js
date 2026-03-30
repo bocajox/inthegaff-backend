@@ -2,8 +2,20 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 
-// Manchester postcode filter — only show M1-M60 postcodes + empty (unfiltered) ones
-const MCR_FILTER = `(l.postcode ~ '^M\\d{1,2}\\s' OR l.postcode IS NULL OR l.postcode = '')`;
+// Known non-Manchester cities that slip through when postcode is empty
+const BAD_CITIES = `'london','birmingham','liverpool','leeds','sheffield','barnsley','maidenhead','penzance','surbiton','chesterfield','solihull','hoyland','bristol','nottingham','coventry','reading','swindon','bolton','wigan','warrington','stoke','derby','leicester','oxford','cambridge','southampton','portsmouth','plymouth','exeter','bath','york','hull','sunderland','newcastle','gateshead','brighton','bournemouth','cardiff','swansea','edinburgh','glasgow'`;
+
+// Manchester postcode filter — M1-M60 postcodes, OR empty postcode but street not in a known non-Manchester city
+const MCR_FILTER = `(
+  l.postcode ~ '^M\\d{1,2}\\s'
+  OR (
+    (l.postcode IS NULL OR l.postcode = '')
+    AND NOT EXISTS (
+      SELECT 1 FROM unnest(ARRAY[${BAD_CITIES}]) AS city
+      WHERE LOWER(l.street) LIKE '%' || city || '%'
+    )
+  )
+)`;
 
 // GET /api/listings
 router.get('/', async (req, res) => {
@@ -103,12 +115,21 @@ router.get('/:id', async (req, res) => {
 // POST /api/listings/cleanup — removes non-Manchester listings from the database
 router.post('/cleanup', async (req, res) => {
   try {
-    // Delete listings where postcode is NOT a Manchester M-postcode
-    // and postcode is not empty (empty means we couldn't determine location)
+    // Delete listings that are clearly not in Manchester:
+    // 1. Non-M postcodes (S74, SL6, NW6, B92, etc.)
+    // 2. Empty postcodes but street contains a known non-Manchester city
     const { rowCount } = await pool.query(`
       DELETE FROM listings
-      WHERE postcode != '' AND postcode IS NOT NULL
-        AND NOT (postcode ~ '^M\\d{1,2}\\s')
+      WHERE (
+        (postcode != '' AND postcode IS NOT NULL AND NOT (postcode ~ '^M\\d{1,2}\\s'))
+        OR (
+          (postcode IS NULL OR postcode = '')
+          AND EXISTS (
+            SELECT 1 FROM unnest(ARRAY[${BAD_CITIES}]) AS city
+            WHERE LOWER(street) LIKE '%' || city || '%'
+          )
+        )
+      )
     `);
     res.json({
       success: true,

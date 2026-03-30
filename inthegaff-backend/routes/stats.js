@@ -2,8 +2,20 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 
-// Manchester postcode filter — only count M1-M60 postcodes + empty (unfiltered) ones
-const MCR_FILTER = `(l.postcode ~ '^M\\d{1,2}\\s' OR l.postcode IS NULL OR l.postcode = '')`;
+// Known non-Manchester cities that slip through when postcode is empty
+const BAD_CITIES = `'london','birmingham','liverpool','leeds','sheffield','barnsley','maidenhead','penzance','surbiton','chesterfield','solihull','hoyland','bristol','nottingham','coventry','reading','swindon','bolton','wigan','warrington','stoke','derby','leicester','oxford','cambridge','southampton','portsmouth','plymouth','exeter','bath','york','hull','sunderland','newcastle','gateshead','brighton','bournemouth','cardiff','swansea','edinburgh','glasgow'`;
+
+// Manchester postcode filter — M1-M60 postcodes, OR empty postcode but street not in a known non-Manchester city
+const MCR_FILTER = `(
+  l.postcode ~ '^M\\d{1,2}\\s'
+  OR (
+    (l.postcode IS NULL OR l.postcode = '')
+    AND NOT EXISTS (
+      SELECT 1 FROM unnest(ARRAY[${BAD_CITIES}]) AS city
+      WHERE LOWER(l.street) LIKE '%' || city || '%'
+    )
+  )
+)`;
 
 // GET /api/stats
 router.get('/', async (req, res) => {
