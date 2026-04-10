@@ -3,7 +3,7 @@
 // Pagination: offset=0, offset=10, offset=20, etc. — ~11 results per page
 // Capped at 100 listings per run to stay within Railway 512MB memory limit
 
-const { fetchHTML, isManchesterArea } = require('./_helpers');
+const { fetchHTML, isManchesterArea, extractPostcode: helperExtractPostcode, guessArea } = require('./_helpers');
 
 const BASE_URL = 'https://www.spareroom.co.uk/flatshare/manchester';
 
@@ -107,7 +107,7 @@ function parseListing($, li) {
   // URL
   const linkEl = el.find('.listing-card__link');
   const href = linkEl.attr('href') || '';
-  const url = href.startsWith('http') ? href : `https://www.spareroom.co.uk${href}`;
+  const listingUrl = href.startsWith('http') ? href : `https://www.spareroom.co.uk${href}`;
 
   // Beds — SpareRoom lists rooms, not whole properties
   // Parse room count from the card text
@@ -117,17 +117,26 @@ function parseListing($, li) {
   if (bedsMatch) beds = parseInt(bedsMatch[1]);
 
   const postcode = extractPostcode(postcodeDistrict) || extractPostcode(locationText);
+  const area = guessArea(address, postcode);
 
   return {
-    external_id: `spareroom-${listingId}`,
+    externalId: `spareroom-${listingId}`,
     title,
     price,
+    beds,
+    type: 'flat',
+    area,
     street: address,
     postcode,
-    beds,
+    description: '',
     photos,
-    url,
-    source: 'spareroom',
+    features: [],
+    furnished: false,
+    parking: false,
+    pets: false,
+    garden: false,
+    balcony: false,
+    listingUrl,
   };
 }
 
@@ -161,8 +170,8 @@ async function scrape() {
           const listing = parseListing($, this);
           if (!listing) return;
 
-          if (seen.has(listing.external_id)) return;
-          seen.add(listing.external_id);
+          if (seen.has(listing.externalId)) return;
+          seen.add(listing.externalId);
 
           listings.push(listing);
         } catch (err) {
@@ -171,6 +180,11 @@ async function scrape() {
       });
 
       console.log(`[spareroom] Page ${page + 1}: ${items.length} raw, ${listings.length} total kept`);
+
+      // Polite delay between pages
+      if (page < MAX_PAGES - 1) {
+        await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
+      }
     } catch (err) {
       console.error(`[spareroom] Error fetching offset=${offset}:`, err.message);
       if (page === 0) {
