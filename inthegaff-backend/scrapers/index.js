@@ -21,4 +21,5 @@ module.exports = [
   require('./letme'),
   require('./belvoir'),
   require('./openrent'),
+  require('./rightmove'),
 ];
