@@ -23,4 +23,5 @@ module.exports = [
   require('./openrent'),
   require('./rightmove'),
   require('./onthemarket'),
+  require('./spareroom'),
 ];
