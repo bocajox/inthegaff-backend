@@ -9,11 +9,16 @@ const { isManchesterArea, extractPostcode, guessArea, parseType, hasFeature } = 
 const BASE = 'https://www.purplebricks.co.uk';
 const SEARCH_URL = `${BASE}/search/property-to-rent/Manchester`;
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'en-GB,en;q=0.9',
-};
+const USER_AGENTS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+];
+
+function randomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
 
 /**
  * Extract __NEXT_DATA__ JSON from HTML
@@ -47,6 +52,7 @@ function parseProperty(prop) {
     if (price < 200 || price > 20000) return null;
 
     const postcode = prop.postcode || extractPostcode(address);
+    const area = guessArea(address, postcode);
     const bedMatch = (prop.title || '').match(/(\d+)\s*bed/i);
     const beds = bedMatch ? parseInt(bedMatch[1]) : (prop.title?.toLowerCase().includes('studio') ? 0 : 1);
 
@@ -65,16 +71,26 @@ function parseProperty(prop) {
       ? (prop.listingUrl.startsWith('http') ? prop.listingUrl : BASE + prop.listingUrl)
       : `${BASE}/property/${prop.id}`;
 
+    const description = prop.description || '';
+
     return {
-      external_id: `purplebricks-${prop.id || prop.listingId}`,
+      externalId: `purplebricks-${prop.id || prop.listingId}`,
       title,
       price,
+      beds,
+      type: parseType(prop.title || ''),
+      area,
       street: address,
       postcode,
-      beds,
+      description,
       photos,
-      url: listingUrl,
-      source: 'purplebricks',
+      features: [],
+      furnished: hasFeature(description + ' ' + (prop.title || ''), ['furnished']),
+      parking: hasFeature(description, ['parking', 'garage']),
+      pets: hasFeature(description, ['pets']),
+      garden: hasFeature(description, ['garden']),
+      balcony: hasFeature(description, ['balcony']),
+      listingUrl,
     };
   } catch (err) {
     console.error('[purplebricks] Error parsing property:', err.message);
@@ -86,7 +102,12 @@ async function scrape() {
   let html;
   try {
     const resp = await axios.get(SEARCH_URL, {
-      headers: HEADERS,
+      headers: {
+        'User-Agent': randomUA(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-GB,en;q=0.9',
+        'Referer': 'https://www.purplebricks.co.uk/search/',
+      },
       timeout: 18000,
       maxRedirects: 5,
     });
