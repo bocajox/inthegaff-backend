@@ -22,4 +22,5 @@ module.exports = [
   require('./belvoir'),
   require('./openrent'),
   require('./rightmove'),
+  require('./onthemarket'),
 ];
