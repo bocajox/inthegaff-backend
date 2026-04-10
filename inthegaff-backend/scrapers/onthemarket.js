@@ -4,21 +4,20 @@
 // Capped at 100 listings per run to stay within Railway 512MB memory limit
 
 const axios = require('axios');
-const { isManchesterArea, extractPostcode } = require('./_helpers');
+const { isManchesterArea, extractPostcode, guessArea, parseType, hasFeature } = require('./_helpers');
 
 const BASE_URL = 'https://www.onthemarket.com/to-rent/property/manchester/';
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'en-GB,en;q=0.9',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Sec-Fetch-Dest': 'document',
-  'Sec-Fetch-Mode': 'navigate',
-  'Sec-Fetch-Site': 'none',
-  'Sec-Fetch-User': '?1',
-  'Upgrade-Insecure-Requests': '1',
-};
+const USER_AGENTS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+];
+
+function randomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
 
 const MAX_LISTINGS = 100;
 const RESULTS_PER_PAGE = 30;
@@ -42,7 +41,7 @@ function extractNextData(html) {
  * Parse price from OnTheMarket format
  * Format: "£995 pcm (£230 pw)" or "£1,200 pcm" or "£300 pw"
  */
-function parsePrice(priceStr) {
+function parseOtmPrice(priceStr) {
   if (!priceStr) return null;
   const clean = priceStr.replace(/,/g, '');
 
@@ -83,7 +82,7 @@ function parseProperty(item) {
     // Geographic filter
     if (!isManchesterArea(address)) return null;
 
-    const price = parsePrice(item.price || item['short-price'] || '');
+    const price = parseOtmPrice(item.price || item['short-price'] || '');
     const beds = typeof item.bedrooms === 'number' ? item.bedrooms : 0;
 
     // Get photos — OnTheMarket provides images array with default/webp URLs
@@ -101,8 +100,10 @@ function parseProperty(item) {
     const id = item.id;
     if (!id) return null;
 
-    // Build title from property type + beds + address
+    const area = guessArea(address, postcode);
     const propType = item['humanised-property-type'] || 'Property';
+
+    // Build title from property type + beds + address
     const title = beds > 0
       ? `${beds} Bed ${propType}, ${address}`
       : `${propType}, ${address}`;
@@ -112,16 +113,27 @@ function parseProperty(item) {
       ? `https://www.onthemarket.com${item['details-url']}`
       : `https://www.onthemarket.com/details/${id}/`;
 
+    // Description from features
+    const description = (item['property-title'] || '');
+
     return {
-      external_id: `onthemarket-${id}`,
+      externalId: `onthemarket-${id}`,
       title,
       price,
+      beds,
+      type: parseType(propType),
+      area,
       street: address,
       postcode,
-      beds,
+      description,
       photos,
-      url: detailsUrl,
-      source: 'onthemarket',
+      features: (item.features || []).map(f => f.content || f).filter(Boolean),
+      furnished: hasFeature(propType + ' ' + description, ['furnished']),
+      parking: hasFeature(description, ['parking', 'garage']),
+      pets: hasFeature(description, ['pets']),
+      garden: hasFeature(description, ['garden']),
+      balcony: hasFeature(description, ['balcony']),
+      listingUrl: detailsUrl,
     };
   } catch (err) {
     console.error('[onthemarket] Error parsing listing:', err.message);
@@ -137,7 +149,18 @@ async function fetchPage(page) {
   console.log(`[onthemarket] Fetching page ${page}: ${url}`);
 
   const { data: html } = await axios.get(url, {
-    headers: HEADERS,
+    headers: {
+      'User-Agent': randomUA(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-GB,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Referer': 'https://www.onthemarket.com/to-rent/',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'same-origin',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+    },
     timeout: 18000,
     maxRedirects: 5,
   });
@@ -197,7 +220,7 @@ async function scrape() {
 
       // Small delay between pages to be polite
       if (page < MAX_PAGES) {
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
       }
     } catch (err) {
       console.error(`[onthemarket] Error fetching page ${page}:`, err.message);
