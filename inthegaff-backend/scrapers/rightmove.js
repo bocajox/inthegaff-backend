@@ -4,7 +4,7 @@
 // Capped at 100 listings per run to stay within Railway 512MB memory limit
 
 const axios = require('axios');
-const { isManchesterArea } = require('./_helpers');
+const { isManchesterArea, extractPostcode, guessArea, parseType, hasFeature } = require('./_helpers');
 
 const BASE_URL = 'https://www.rightmove.co.uk/property-to-rent/find.html';
 const SEARCH_PARAMS = {
@@ -18,17 +18,16 @@ const SEARCH_PARAMS = {
   keywords: '',
 };
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'en-GB,en;q=0.9',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Sec-Fetch-Dest': 'document',
-  'Sec-Fetch-Mode': 'navigate',
-  'Sec-Fetch-Site': 'none',
-  'Sec-Fetch-User': '?1',
-  'Upgrade-Insecure-Requests': '1',
-};
+const USER_AGENTS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+];
+
+function randomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
 
 const MAX_LISTINGS = 100;
 const RESULTS_PER_PAGE = 25;
@@ -38,7 +37,7 @@ const MAX_PAGES = Math.ceil(MAX_LISTINGS / RESULTS_PER_PAGE); // 4 pages
  * Extract __NEXT_DATA__ JSON from the HTML response
  */
 function extractNextData(html) {
-  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
+  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
   if (!match) return null;
   try {
     return JSON.parse(match[1]);
@@ -52,7 +51,7 @@ function extractNextData(html) {
  * Parse price — Rightmove provides structured price data in JSON
  * price.amount is already monthly, but we double-check with frequency
  */
-function parsePrice(priceObj) {
+function parseRmPrice(priceObj) {
   if (!priceObj || !priceObj.amount) return null;
   let amount = priceObj.amount;
 
@@ -67,21 +66,6 @@ function parsePrice(priceObj) {
 }
 
 /**
- * Extract postcode from display address
- * Rightmove addresses usually end with the postcode district e.g. "Manchester, M1"
- */
-function extractPostcode(address) {
-  if (!address) return '';
-  // Full postcode: M1 1AA, M20 3BG etc.
-  const full = address.match(/\b(M\d{1,2}\s*\d[A-Z]{2})\b/i);
-  if (full) return full[1].toUpperCase();
-  // Partial district: M1, M20 etc.
-  const district = address.match(/\b(M\d{1,2})\b/i);
-  if (district) return district[1].toUpperCase();
-  return '';
-}
-
-/**
  * Parse a single property from the Rightmove JSON
  */
 function parseProperty(prop) {
@@ -90,7 +74,7 @@ function parseProperty(prop) {
   // Geographic filter
   if (!isManchesterArea(address)) return null;
 
-  const price = parsePrice(prop.price);
+  const price = parseRmPrice(prop.price);
 
   // Get photos — Rightmove provides srcUrl in the images array
   const photos = (prop.images || [])
@@ -100,6 +84,7 @@ function parseProperty(prop) {
 
   const postcode = extractPostcode(address);
   const beds = typeof prop.bedrooms === 'number' ? prop.bedrooms : 0;
+  const area = guessArea(address, postcode);
 
   // Build title from property type + beds + address
   const subType = prop.propertySubType || 'Property';
@@ -112,16 +97,27 @@ function parseProperty(prop) {
     ? `https://www.rightmove.co.uk${prop.propertyUrl}`
     : `https://www.rightmove.co.uk/properties/${prop.id}`;
 
+  // Extract description snippet
+  const description = prop.summary || '';
+
   return {
-    external_id: `rightmove-${prop.id}`,
+    externalId: `rightmove-${prop.id}`,
     title,
     price,
+    beds,
+    type: parseType(subType),
+    area,
     street: address,
     postcode,
-    beds,
+    description,
     photos,
-    url: propertyUrl,
-    source: 'rightmove',
+    features: [],
+    furnished: false,
+    parking: hasFeature(description, ['parking', 'garage']),
+    pets: hasFeature(description, ['pets']),
+    garden: hasFeature(description, ['garden']),
+    balcony: hasFeature(description, ['balcony']),
+    listingUrl: propertyUrl,
   };
 }
 
@@ -134,7 +130,18 @@ async function fetchPage(index) {
 
   console.log(`[rightmove] Fetching page at index=${index}`);
   const { data } = await axios.get(url, {
-    headers: HEADERS,
+    headers: {
+      'User-Agent': randomUA(),
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-GB,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Referer': 'https://www.rightmove.co.uk/property-to-rent.html',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'same-origin',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+    },
     timeout: 18000,
     maxRedirects: 5,
   });
@@ -191,6 +198,11 @@ async function scrape() {
       }
 
       console.log(`[rightmove] Page ${page + 1}: ${properties.length} raw, ${listings.length} total kept`);
+
+      // Polite delay between pages
+      if (page < MAX_PAGES - 1) {
+        await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
+      }
     } catch (err) {
       console.error(`[rightmove] Error fetching page index=${index}:`, err.message);
       // If first page fails (e.g. 403), abort entirely
